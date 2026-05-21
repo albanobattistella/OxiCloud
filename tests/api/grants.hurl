@@ -475,6 +475,21 @@ Authorization: Bearer {{adam_token}}
 
 HTTP 404
 
+# ── Chunked upload: cannot start session in alice's folder ──
+# create_upload_impl pre-checks Permission::Create via has_permission.
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{adam_token}}
+Content-Type: application/json
+{
+  "filename": "adam-chunked-attack.mp4",
+  "folder_id": "{{perm_folder_id}}",
+  "content_type": "video/mp4",
+  "total_size": 2760653,
+  "chunk_size": 3000000
+}
+
+HTTP 404
+
 
 # ════════════════════════════════════════════════════════════════════
 # Phase 2B — Alice grants adam Viewer. Read OK, mutate/delete denied.
@@ -594,6 +609,20 @@ Authorization: Bearer {{adam_token}}
 
 HTTP 404
 
+# ── Viewer cannot start a chunked upload (no Create grant) ──
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{adam_token}}
+Content-Type: application/json
+{
+  "filename": "viewer-chunked-attempt.mp4",
+  "folder_id": "{{perm_folder_id}}",
+  "content_type": "video/mp4",
+  "total_size": 2760653,
+  "chunk_size": 3000000
+}
+
+HTTP 404
+
 
 # ════════════════════════════════════════════════════════════════════
 # Phase 2C — Promote adam to Editor (read + comment + create + update).
@@ -648,6 +677,80 @@ folder_id: {{perm_folder_id}}
 file: file,fixtures/hello.txt; text/plain
 
 HTTP 201
+
+# ── Chunked upload full lifecycle as Editor ─────────────────
+# 1. Open session (server pre-checks Create on folder)
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{adam_token}}
+Content-Type: application/json
+{
+  "filename": "adam-chunked-video.mp4",
+  "folder_id": "{{perm_folder_id}}",
+  "content_type": "video/mp4",
+  "total_size": 2760653,
+  "chunk_size": 3000000
+}
+
+HTTP 201
+[Captures]
+adam_upload_id: jsonpath "$.upload_id"
+
+# 2. Send the single chunk (chunk_size > total_size → 1 chunk).
+PATCH {{base_url}}/api/uploads/{{adam_upload_id}}?chunk_index=0
+Authorization: Bearer {{adam_token}}
+Content-Type: application/octet-stream
+file,fixtures/free_video_over_1MB.mp4;
+
+HTTP 200
+
+# 3. Status query: dave (different user) cannot peek at adam's session.
+HEAD {{base_url}}/api/uploads/{{adam_upload_id}}
+Authorization: Bearer {{dave_token}}
+
+HTTP 404
+
+# 4. Cancel attempt by a different user is rejected.
+DELETE {{base_url}}/api/uploads/{{adam_upload_id}}
+Authorization: Bearer {{dave_token}}
+
+HTTP 404
+
+# 5. Adam completes the upload — file is created in alice's folder.
+POST {{base_url}}/api/uploads/{{adam_upload_id}}/complete
+Authorization: Bearer {{adam_token}}
+
+HTTP 201
+[Captures]
+adam_chunked_file_id: jsonpath "$.file_id"
+
+# 6. The new file is visible in the folder listing (caller-of-listing is alice).
+GET {{base_url}}/api/files?folder_id={{perm_folder_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$[?(@.id=='{{adam_chunked_file_id}}')].name" == "adam-chunked-video.mp4"
+
+# 7. A second session that adam cancels before completing — cleanup path.
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{adam_token}}
+Content-Type: application/json
+{
+  "filename": "adam-cancelled.mp4",
+  "folder_id": "{{perm_folder_id}}",
+  "content_type": "video/mp4",
+  "total_size": 2760653,
+  "chunk_size": 3000000
+}
+
+HTTP 201
+[Captures]
+adam_cancel_id: jsonpath "$.upload_id"
+
+DELETE {{base_url}}/api/uploads/{{adam_cancel_id}}
+Authorization: Bearer {{adam_token}}
+
+HTTP 204
 
 # ── Delete still denied (Editor excludes Delete) ────────────
 DELETE {{base_url}}/api/files/{{perm_file_id}}
