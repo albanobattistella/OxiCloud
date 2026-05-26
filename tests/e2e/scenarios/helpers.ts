@@ -7,7 +7,17 @@ export const TEST_ADMIN = {
 };
 
 /**
- * Log in as the test admin and wait until the main app is ready.
+ * Log in as the test admin and wait until the main app is fully initialized.
+ *
+ * We wait for two things after the login redirect:
+ *  1. `#sidebar` — confirms the main HTML has loaded.
+ *  2. `#user-avatar-btn .user-vignette` — confirms that `setupUserMenu()` has
+ *     run and mounted the avatar vignette.  This is the earliest reliable
+ *     signal that the click-handler on the avatar button is attached, so any
+ *     subsequent test that opens the user menu will not race against JS startup.
+ *
+ * Without (2), CI (Ubuntu + Xvfb) occasionally clicks the button before the
+ * event listener is registered because the JS runtime is slower than on macOS.
  */
 export async function loginAsAdmin(page: Page) {
   await goToLoginPage(page);
@@ -15,6 +25,8 @@ export async function loginAsAdmin(page: Page) {
   await page.locator('#login-password').fill(TEST_ADMIN.password);
   await page.locator('#login-panel button[type="submit"]').click();
   await expect(page.locator('#sidebar')).toBeVisible({ timeout: 15_000 });
+  // Wait for the JS app to initialise: avatar vignette present ⟹ click handler attached.
+  await expect(page.locator('#user-avatar-btn .user-vignette')).toBeAttached({ timeout: 10_000 });
 }
 
 /**
