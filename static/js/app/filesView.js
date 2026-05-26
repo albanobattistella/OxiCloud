@@ -1,8 +1,8 @@
 // @ts-check
 
 import { i18n } from '../core/i18n.js';
-import { inlineViewer } from '../features/files/inlineViewer.js';
 import { batchToolbar } from '../features/files/batchToolbar.js';
+import { inlineViewer } from '../features/files/inlineViewer.js';
 import { resolveHomeFolder } from './authSession.js';
 import { updateHistory } from './main.js';
 import { app } from './state.js';

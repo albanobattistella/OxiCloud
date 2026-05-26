@@ -258,11 +258,39 @@ pub struct IncomingGrantSummary {
 
 /// Encodes the position of the last seen item in a cursor-paginated grant
 /// listing. The encoding is opaque to API callers — only the backend
-/// decodes it. Change the encoding algorithm in a major version bump.
+/// decodes it.
+///
+/// The `sort_by` field must match the active sort dimension — if the caller
+/// switches sort order the handler discards any cursor whose `sort_by` does
+/// not match, restarting from the first page.
+///
+/// Sort-key fields populated per `sort_by` value:
+/// - `"granted_at"` (default) — uses `granted_at` + `resource_id`
+/// - `"name"`        — uses `resource_name` (lowercased) + `resource_id`
+/// - `"type"`        — uses `type_order` + `resource_name` (lowercased) + `resource_id`
+/// - `"granted_by"`  — uses `resource_name` (owner display name, lowercased) + `granted_at` + `resource_id`
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GrantCursor {
+    /// Sort dimension that was active when this cursor was produced.
+    #[serde(default = "GrantCursor::default_sort")]
+    pub sort_by: String,
     pub granted_at: chrono::DateTime<chrono::Utc>,
     pub resource_id: Uuid,
+    /// Lowercased sort string — resource name for `"name"`/`"type"`,
+    /// owner display name for `"granted_by"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_name: Option<String>,
+    /// Generic integer sort key:
+    /// - `"type"`  — category_order (0 = Folder, 100 = Image, …)
+    /// - `"size"`  — file size in bytes (-1 = Folder sentinel)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_int: Option<i64>,
+}
+
+impl GrantCursor {
+    fn default_sort() -> String {
+        "granted_at".to_owned()
+    }
 }
 
 /// Delegate encode/decode to the shared [`PageCursor`] trait.

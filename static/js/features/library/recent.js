@@ -7,9 +7,9 @@
  */
 
 import { ui } from '../../app/ui.js';
+import { ResourceListComponent } from '../../components/resourceList.js';
 import { getCsrfHeaders } from '../../core/csrf.js';
 import { i18n } from '../../core/i18n.js';
-import { ResourceListComponent } from '../../components/resourceList.js';
 import { batchToolbar } from '../files/batchToolbar.js';
 import * as pathTooltip from '../pathTooltip.js';
 
@@ -109,9 +109,7 @@ const recent = {
             if (filesList) {
                 // Relabel the date column header from "Modified" → "Accessed"
                 const dateHeader = /** @type {HTMLElement|null} */ (
-                    [...filesList.querySelectorAll('.list-header > div')].find(
-                        (el) => el.getAttribute('data-i18n') === 'files.modified'
-                    )
+                    [...filesList.querySelectorAll('.list-header > div')].find((el) => el.getAttribute('data-i18n') === 'files.modified')
                 );
                 if (dateHeader) {
                     dateHeader.removeAttribute('data-i18n');
@@ -133,87 +131,83 @@ const recent = {
                 return;
             }
 
-            /** @type {FolderItem[]} */
-            const folders = [];
-
-            /** @type {FileItem[]} */
-            const files = [];
+            /** @type {Array<FileItem|FolderItem>} */
+            const items = [];
 
             for (const item of recentItems) {
                 const isFolder = item.item_type === 'folder';
                 if (isFolder) {
-                    folders.push({
-                        id: item.item_id,
-                        name: item.item_name || item.item_id,
-                        parent_id: item.parent_id || '',
-                        modified_at: item.accessed_at,
-                        path: item.item_path || '',
-                        category: 'folder',
-                        created_at: item.accessed_at, // Wrong information — server only stores accessed_at
-                        icon_class: item.icon_class,
-                        icon_special_class: item.icon_special_class,
-                        owner_id: '',
-                        is_root: false
-                    });
+                    items.push(
+                        /** @type {FolderItem} */ ({
+                            id: item.item_id,
+                            name: item.item_name || item.item_id,
+                            parent_id: item.parent_id || '',
+                            modified_at: item.accessed_at,
+                            path: item.item_path || '',
+                            category: 'folder',
+                            created_at: item.accessed_at, // Wrong information — server only stores accessed_at
+                            icon_class: item.icon_class,
+                            icon_special_class: item.icon_special_class,
+                            owner_id: '',
+                            is_root: false
+                        })
+                    );
                 } else {
                     if (item.item_mime_type === undefined || item.item_mime_type === null) {
                         // FIXME: this case should not be possible, is it an information badly cleaned up on server ?
                         console.warn('Broken information for RecentItem: ', item);
                     }
-                    files.push({
-                        id: item.item_id,
-                        name: item.item_name || item.item_id,
-                        folder_id: item.parent_id || '',
-                        mime_type: item.item_mime_type,
-                        icon_class: item.icon_class,
-                        icon_special_class: item.icon_special_class,
-                        category: item.category,
-                        size: item.item_size || 0,
-                        size_formatted: item.size_formatted,
-                        modified_at: item.accessed_at,
-                        path: item.item_path || '',
-                        owner_id: '',
-                        created_at: item.accessed_at, // Wrong information — server only stores accessed_at
-                        sort_date: item.accessed_at
-                    });
+                    items.push(
+                        /** @type {FileItem} */ ({
+                            id: item.item_id,
+                            name: item.item_name || item.item_id,
+                            folder_id: item.parent_id || '',
+                            mime_type: item.item_mime_type,
+                            icon_class: item.icon_class,
+                            icon_special_class: item.icon_special_class,
+                            category: item.category,
+                            size: item.item_size || 0,
+                            size_formatted: item.size_formatted,
+                            modified_at: item.accessed_at,
+                            path: item.item_path || '',
+                            owner_id: '',
+                            created_at: item.accessed_at, // Wrong information — server only stores accessed_at
+                            sort_date: item.accessed_at
+                        })
+                    );
                 }
             }
 
             if (filesList) {
                 if (!this._component) {
-                    this._component = new ResourceListComponent(
-                        /** @type {HTMLElement} */ (filesList),
-                        {
-                            selectable: true,
-                            showFavorite: true,
-                            showOwner: false,
-                            showShareBadge: false,
-                            draggable: false,
-                            showContextMenu: true,
-                            itemModifierClass: 'recent-item',
-                            dateField: 'modified_at', // mapped from accessed_at above
-                            onOpen: (item) => ui.openItem(item),
-                            onContextMenu: (item, e) => ui.showContextMenuForItem(item, e),
-                            onSelectionChange: (selectedItems) => {
-                                batchToolbar._selected.clear();
-                                for (const sel of selectedItems) {
-                                    const isFile = 'mime_type' in sel;
-                                    batchToolbar._selected.set(sel.id, {
-                                        id: sel.id,
-                                        name: sel.name,
-                                        type: isFile ? 'file' : 'folder',
-                                        parentId: isFile
-                                            ? (/** @type {FileItem} */ (sel)).folder_id || ''
-                                            : (/** @type {FolderItem} */ (sel)).parent_id || ''
-                                    });
-                                }
-                                batchToolbar._syncUI();
+                    this._component = new ResourceListComponent(/** @type {HTMLElement} */ (filesList), {
+                        selectable: true,
+                        showFavorite: true,
+                        showOwner: false,
+                        showShareBadge: false,
+                        draggable: false,
+                        showContextMenu: true,
+                        itemModifierClass: 'recent-item',
+                        dateField: 'modified_at', // mapped from accessed_at above
+                        onOpen: (item) => ui.openItem(item),
+                        onContextMenu: (item, e) => ui.showContextMenuForItem(item, e),
+                        onSelectionChange: (selectedItems) => {
+                            batchToolbar._selected.clear();
+                            for (const sel of selectedItems) {
+                                const isFile = 'mime_type' in sel;
+                                batchToolbar._selected.set(sel.id, {
+                                    id: sel.id,
+                                    name: sel.name,
+                                    type: isFile ? 'file' : 'folder',
+                                    parentId: isFile ? /** @type {FileItem} */ (sel).folder_id || '' : /** @type {FolderItem} */ (sel).parent_id || ''
+                                });
                             }
+                            batchToolbar._syncUI();
                         }
-                    );
+                    });
                 }
                 batchToolbar.setActiveComponent(this._component);
-                this._component.render(folders, files);
+                this._component.render(items);
                 pathTooltip.init(filesList);
             }
         } catch (error) {

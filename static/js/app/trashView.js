@@ -4,8 +4,8 @@
 
 import { escapeHtml, formatDateTime } from '../core/formatters.js';
 import { i18n } from '../core/i18n.js';
-import { fileOps } from '../features/files/fileOperations.js';
 import { batchToolbar } from '../features/files/batchToolbar.js';
+import { fileOps } from '../features/files/fileOperations.js';
 import * as pathTooltip from '../features/pathTooltip.js';
 import { appElements } from './state.js';
 import { ui } from './ui.js';

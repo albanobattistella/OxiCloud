@@ -551,6 +551,66 @@
     padding: 2px;
 }
 
+/* ── Swimlane group header ───────────────────────────────── */
+
+/* Spans the full grid width in list view; no-op in grid view since
+   grid wraps it naturally. */
+.resource-list__swimlane-header {
+    grid-column: 1 / -1;
+    padding: 6px 12px 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-faint);
+    border-bottom: 1px solid var(--color-border);
+    margin-top: 8px;
+    cursor: default;
+    user-select: none;
+}
+
+.resource-list__swimlane-header:first-child,
+.list-header + .resource-list__swimlane-header {
+    margin-top: 0;
+}
+
+/* ── Swimlane group card (list view only) ────────────────── */
+
+/* When swimlane groups are present, dissolve the outer container into the
+   page background so each group card reads as its own panel. */
+.files-list-view:has(.resource-list__swimlane-group) {
+    background-color: transparent;
+    box-shadow: none;
+    border-radius: 0;
+    overflow: visible;
+    gap: 10px;
+}
+
+/* Each group is a self-contained card */
+.files-list-view .resource-list__swimlane-group {
+    background-color: var(--color-item);
+    border-radius: 10px;
+    box-shadow: 0 1px 3px var(--color-shadow-xs);
+    overflow: hidden;
+}
+
+/* The header inside a group card is always first — no extra top margin */
+.files-list-view .resource-list__swimlane-group .resource-list__swimlane-header {
+    margin-top: 0;
+}
+
+/* ── Swimlane group wrapper (grid view) ──────────────────── */
+
+/* The group wrapper must be transparent to the grid so .file-item children
+   continue to flow in the parent's columns (subgrid mirrors the column tracks).
+   The wrapper spans the full row width; items inside fill the columns naturally. */
+.files-grid-view .resource-list__swimlane-group {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+    gap: 20px;
+}
+
 /* ── Section item modifiers ──────────────────────────────── */
 
 /* — Favorites — */

@@ -16,9 +16,9 @@ import { i18n } from '../../core/i18n.js';
 import { favorites } from '../library/favorites.js';
 import { musicView } from '../library/music.js';
 import { fileSharing } from '../sharing/fileSharing.js';
+import { batchToolbar } from './batchToolbar.js';
 import { fileOps } from './fileOperations.js';
 import { inlineViewer } from './inlineViewer.js';
-import { batchToolbar } from './batchToolbar.js';
 import { wopiEditor } from './wopiEditor.js';
 
 /**

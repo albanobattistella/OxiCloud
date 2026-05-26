@@ -89,6 +89,30 @@ export class ResourceListComponent {
         /** Index of the last clicked item — used for shift-click range selection. */
         this._lastClickedIndex = -1;
 
+        /**
+         * The grouping key of the last rendered item — persisted across
+         * `append()` calls so load-more pages don't insert a redundant header
+         * when the first item of the new page shares a group with the last
+         * item of the previous page.
+         * `undefined` means no items have been rendered yet (reset in `render()`).
+         * @type {string|null|undefined}
+         */
+        this._lastGroupKey = undefined;
+
+        /**
+         * The live DOM group wrapper of the last rendered swimlane — persisted
+         * across `append()` calls so load-more items that continue the same
+         * group are appended into the existing card rather than starting a new one.
+         * @type {HTMLElement|null}
+         */
+        this._lastGroupEl = null;
+
+        /**
+         * Optional label-resolver stored between `render()` and `append()` calls.
+         * @type {((key: string) => string) | undefined}
+         */
+        this._groupLabelFn = undefined;
+
         this._ownerVisible = this._cfg.showOwner;
 
         this._initDelegation();
@@ -100,13 +124,20 @@ export class ResourceListComponent {
      * Replace the current item list.  Preserves an existing `.list-header`
      * at the start of the container.
      *
-     * @param {FolderItem[]} folders
-     * @param {FileItem[]}   files
+     * Items are rendered **in the order supplied** — do not pre-sort or
+     * split them into folders/files; the caller (or server) owns ordering.
+     * Folders vs. files are distinguished at render time by whether the item
+     * has a `mime_type` property.
+     *
+     * @param {Array<FileItem|FolderItem>} items
      * @param {((item: FileItem|FolderItem) => string|null)=} groupFn
      *   When provided, a swimlane divider is injected whenever the returned
-     *   label changes.  Return `null` to suppress the divider for that item.
+     *   key changes.  Return `null` to suppress the divider for that item.
+     * @param {((key: string) => string)=} groupLabelFn
+     *   Optional: converts the raw grouping key to a human-readable header
+     *   label.  When omitted the key itself is used.
      */
-    render(folders, files, groupFn) {
+    render(items, groupFn, groupLabelFn) {
         const header = this._container.querySelector('.list-header');
         this._container.innerHTML = '';
         if (header) this._container.appendChild(header);
@@ -114,23 +145,29 @@ export class ResourceListComponent {
         this._selected.clear();
         this._items.clear();
         this._lastClickedIndex = -1;
+        // Reset group tracking for the fresh render
+        this._lastGroupKey = undefined;
+        this._lastGroupEl = null;
+        this._groupLabelFn = groupLabelFn;
 
         // Prevent ui.js global delegation from firing on this container
         this._container.dataset.managedBy = 'resource-list';
 
-        this._appendItems(folders, files, groupFn);
+        this._appendItems(items, groupFn, groupLabelFn);
         this._wireSelectAll();
     }
 
     /**
      * Append additional items without clearing the existing ones (load-more).
+     * Continues swimlane grouping from the last item of the previous page —
+     * no redundant header is inserted when the key is unchanged.
      *
-     * @param {FolderItem[]} folders
-     * @param {FileItem[]}   files
+     * @param {Array<FileItem|FolderItem>} items
      * @param {((item: FileItem|FolderItem) => string|null)=} groupFn
+     * @param {((key: string) => string)=} groupLabelFn
      */
-    append(folders, files, groupFn) {
-        this._appendItems(folders, files, groupFn);
+    append(items, groupFn, groupLabelFn) {
+        this._appendItems(items, groupFn, groupLabelFn ?? this._groupLabelFn);
     }
 
     /** Remove all items (but keep `.list-header` if present). */
@@ -141,6 +178,8 @@ export class ResourceListComponent {
         this._selected.clear();
         this._items.clear();
         this._lastClickedIndex = -1;
+        this._lastGroupKey = undefined;
+        this._lastGroupEl = null;
         // Hand delegation back to ui.js
         delete this._container.dataset.managedBy;
     }
@@ -239,50 +278,74 @@ export class ResourceListComponent {
     // ── Private helpers ─────────────────────────────────────────────────────
 
     /**
-     * @param {FolderItem[]} folders
-     * @param {FileItem[]}   files
+     * Internal: append items to the container in the order supplied.
+     * Files vs. folders are distinguished by presence of `mime_type`.
+     *
+     * @param {Array<FileItem|FolderItem>} items
      * @param {((item: FileItem|FolderItem) => string|null)=} groupFn
+     * @param {((key: string) => string)=} groupLabelFn
      */
-    _appendItems(folders, files, groupFn) {
+    _appendItems(items, groupFn, groupLabelFn) {
         const fragment = document.createDocumentFragment();
-        let lastGroupKey = /** @type {string|null|undefined} */ (undefined);
 
-        for (const folder of folders) {
-            this._items.set(folder.id, folder);
+        // Start from the persisted key so load-more pages continue seamlessly.
+        let lastGroupKey = this._lastGroupKey;
+
+        // liveGroup: existing DOM group element from the previous page; items
+        // that continue its group are appended directly into it (not via fragment).
+        // fragmentGroup: the group wrapper currently being built in the fragment.
+        let liveGroup = groupFn ? this._lastGroupEl : null;
+        let fragmentGroup = /** @type {HTMLElement|null} */ (null);
+
+        for (const item of items) {
+            this._items.set(item.id, item);
+
             if (groupFn) {
-                const key = groupFn(folder);
+                const key = groupFn(item);
                 if (key !== lastGroupKey) {
                     lastGroupKey = key;
-                    if (key !== null) fragment.appendChild(this._createGroupHeader(key));
-                }
-            }
-            fragment.appendChild(this._createFolderItem(folder));
-        }
+                    liveGroup = null; // stop extending the previous page's group
+                    fragmentGroup = null;
 
-        for (const file of files) {
-            this._items.set(file.id, file);
-            if (groupFn) {
-                const key = groupFn(file);
-                if (key !== lastGroupKey) {
-                    lastGroupKey = key;
-                    if (key !== null) fragment.appendChild(this._createGroupHeader(key));
+                    if (key !== null) {
+                        fragmentGroup = document.createElement('div');
+                        fragmentGroup.className = 'resource-list__swimlane-group';
+                        fragmentGroup.appendChild(this._createGroupHeader(key, groupLabelFn));
+                        fragment.appendChild(fragmentGroup);
+                    }
                 }
             }
-            fragment.appendChild(this._createFileItem(file));
+
+            // Dispatch to the correct renderer: files have mime_type, folders do not.
+            const isFile = 'mime_type' in item;
+            const itemEl = isFile ? this._createFileItem(/** @type {FileItem} */ (item)) : this._createFolderItem(/** @type {FolderItem} */ (item));
+
+            // Priority: live DOM group (load-more continuation) > current fragment group > bare container
+            const target = liveGroup ?? fragmentGroup;
+            if (target) {
+                target.appendChild(itemEl);
+            } else {
+                fragment.appendChild(itemEl);
+            }
         }
 
         this._container.appendChild(fragment);
+        // Persist for the next append() call (load-more continuity).
+        this._lastGroupKey = lastGroupKey;
+        // Track the last group element (live or freshly added) for the next page.
+        this._lastGroupEl = fragmentGroup ?? liveGroup;
     }
 
     /**
      * Create a swimlane divider element.
-     * @param {string} label
+     * @param {string} key       - Raw grouping key (e.g. UUID or bucket name).
+     * @param {((key: string) => string)=} labelFn - Optional human-readable resolver.
      */
-    _createGroupHeader(label) {
+    _createGroupHeader(key, labelFn) {
         const el = document.createElement('div');
         el.className = 'resource-list__swimlane-header';
         el.dataset.swimlaneHeader = 'true';
-        el.textContent = label;
+        el.textContent = labelFn ? labelFn(key) : key;
         return el;
     }
 

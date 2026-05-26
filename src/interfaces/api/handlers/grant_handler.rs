@@ -323,13 +323,29 @@ pub async fn list_shared_with_me(
     // Clamp limit to 1–200.
     let limit = q.limit_clamped() as u32;
 
-    // Decode cursor (treat invalid cursor as "start from top").
-    let cursor = q.decode_cursor::<GrantCursor>();
+    // Validate sort_by (defaults to "granted_at").
+    let sort_by = q.sort_by.as_deref().unwrap_or("granted_at");
+    if !matches!(
+        sort_by,
+        "granted_at" | "granted_by" | "name" | "type" | "size"
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid sort_by; valid values: granted_at, granted_by, name, type, size"})),
+        )
+            .into_response();
+    }
+
+    // Decode cursor — discard it when the sort dimension changed to avoid
+    // keyset confusion across sort modes.
+    let cursor = q
+        .decode_cursor::<GrantCursor>()
+        .filter(|c| c.sort_by == sort_by);
 
     // Fetch paged summaries from the ACL engine.
     let (summaries, next_cursor) = match state
         .authorization
-        .list_incoming_resources_paged(subject, &kinds, limit, cursor)
+        .list_incoming_resources_paged(subject, &kinds, limit, cursor, sort_by)
         .await
     {
         Ok(r) => r,

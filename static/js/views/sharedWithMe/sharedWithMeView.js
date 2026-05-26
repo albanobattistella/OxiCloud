@@ -11,8 +11,9 @@
  */
 
 import { ui } from '../../app/ui.js';
-import { i18n } from '../../core/i18n.js';
 import { ResourceListComponent } from '../../components/resourceList.js';
+import { normalizeDateBucket, sizeBucket } from '../../core/formatters.js';
+import { i18n } from '../../core/i18n.js';
 import { batchToolbar } from '../../features/files/batchToolbar.js';
 import { favorites } from '../../features/library/favorites.js';
 import { ownerTooltip } from '../../features/ownerTooltip.js';
@@ -20,6 +21,107 @@ import { grants } from '../../model/grants.js';
 import { systemUsers } from '../../model/systemUsers.js';
 
 /** @import {SharedWithMeItem, FileItem, FolderItem, ResourceTypeEnum} from '../../core/types.js' */
+
+/**
+ * @typedef {{ key: string, label: string, orderBy: string,
+ *             keyFn: (item: FileItem|FolderItem) => string|null,
+ *             labelFn?: (key: string) => string }} GroupByDef
+ */
+
+/**
+ * Group-by dimension definitions for this section.
+ * Exported via `sharedWithMeView.groupByDefs` so `main.js` can populate
+ * the dropdown dynamically without knowing the internals of this view.
+ *
+ * `keyFn` returns the grouping key (stable UUID for owner, or a
+ * human-readable bucket label for shareDate — the bucket IS the key because
+ * it is already derived from the date, so no separate `labelFn` is needed
+ * for shareDate).
+ *
+ * @type {GroupByDef[]}
+ */
+const GROUP_BY_DEFS = [
+    {
+        key: 'type',
+        get label() {
+            return i18n.t('groupby.type', 'Type');
+        },
+        orderBy: 'type',
+        // keyFn: folders get their own swimlane; files use the pre-computed
+        // `category` field from the DTO (e.g. 'Image', 'Video', 'Audio' …).
+        // The server orders by category_order (a pre-computed SMALLINT column)
+        // so items within the same category arrive grouped — no client sort needed.
+        keyFn: (item) => ('mime_type' in item ? /** @type {Record<string,string>} */ (/** @type {unknown} */ (item)).category || 'other' : 'Folder'),
+        labelFn: (key) => {
+            // biome-ignore format: keep indentation
+            /** @type {Record<string, string>} */
+            const labels = {
+                Folder:       i18n.t('groupby.type.folders', 'Folders'),
+                Image:        i18n.t('category.images', 'Images'),
+                Video:        i18n.t('category.videos', 'Videos'),
+                Audio:        i18n.t('category.audio', 'Audio'),
+                PDF:          'PDF',
+                Document:     i18n.t('category.documents', 'Documents'),
+                Spreadsheet:  i18n.t('category.spreadsheets', 'Spreadsheets'),
+                Presentation: i18n.t('category.presentations', 'Presentations'),
+                Archive:      i18n.t('category.archives', 'Archives'),
+                Code:         i18n.t('category.code', 'Code'),
+                Markdown:     i18n.t('category.markdown', 'Markdown'),
+                Text:         i18n.t('category.text', 'Text'),
+                Installer:    i18n.t('category.installers', 'Installers')
+            };
+            return labels[key] ?? key;
+        }
+    },
+    {
+        key: 'owner',
+        // label is accessed via syncGroupByMenu → read at section-switch time,
+        // when translations are guaranteed to be loaded.
+        get label() {
+            return i18n.t('groupby.owner', 'Owner');
+        },
+        orderBy: 'granted_by',
+        // keyFn groups by UUID — stable and unique, avoids collisions between
+        // users with the same display name.
+        keyFn: (item) => {
+            const r = /** @type {Record<string,string>} */ (/** @type {unknown} */ (item));
+            return r.owner_id || null;
+        },
+        // labelFn resolves UUID → display name from the pre-fetched cache.
+        labelFn: (id) => systemUsers.getDisplayNameSync(id)
+    },
+    {
+        key: 'size',
+        get label() {
+            return i18n.t('groupby.size', 'Size');
+        },
+        orderBy: 'size',
+        // keyFn: the key IS the bucket label returned by sizeBucket(), so no
+        // separate labelFn is needed (same pattern as shareDate).
+        // Folders have no size — sizeBucket(-1) returns the "Folders" label.
+        keyFn: (item) => {
+            if (!('mime_type' in item)) return sizeBucket(-1);
+            const r = /** @type {Record<string,number>} */ (/** @type {unknown} */ (item));
+            return sizeBucket(r.size ?? 0);
+        }
+        // No labelFn: keyFn already returns the human-readable label.
+    },
+    {
+        key: 'shareDate',
+        get label() {
+            return i18n.t('groupby.shareDate', 'Share date');
+        },
+        orderBy: 'granted_at',
+        // keyFn returns the human-readable bucket label; the label IS the key
+        // because consecutive items with the same bucket should be in one group.
+        // sort_date is stored as unix seconds (number) in _mapItems().
+        keyFn: (item) => {
+            const r = /** @type {Record<string,number>} */ (/** @type {unknown} */ (item));
+            return r.sort_date ? normalizeDateBucket(r.sort_date) : null;
+        }
+        // No labelFn: keyFn already returns the human-readable label.
+    }
+];
 
 /** ID of the "Load more" wrapper injected below `.files-container`. */
 const LOAD_MORE_ID = 'swm-load-more-wrapper';
@@ -35,7 +137,35 @@ const sharedWithMeView = {
     /** @type {ResourceListComponent|null} */
     _component: null,
 
+    /**
+     * Active group-by key. '' = no grouping, 'owner' | 'shareDate' = active.
+     * @type {string}
+     */
+    _groupBy: '',
+
     // ── Public API ────────────────────────────────────────────────────────────
+
+    /**
+     * The group-by dimension definitions for this section.
+     * `main.js` reads this to populate the Group-by dropdown dynamically.
+     * @returns {GroupByDef[]}
+     */
+    get groupByDefs() {
+        return GROUP_BY_DEFS;
+    },
+
+    /**
+     * Change the active group-by dimension and reload from page 1.
+     * Calling with the current key is a no-op.
+     * @param {string} key  '' | 'owner' | 'shareDate'
+     */
+    setGroupBy(key) {
+        if (this._groupBy === key) return;
+        this._groupBy = key;
+        this._nextCursor = null; // restart from first page
+        this._component?.clear();
+        this._loadPage();
+    },
 
     /**
      * (Re-)load from page 1 and render into the existing files container.
@@ -44,6 +174,7 @@ const sharedWithMeView = {
     async init() {
         this._nextCursor = null;
         this._loading = false;
+        this._groupBy = '';
 
         this._ensureLoadMoreButton();
 
@@ -60,47 +191,42 @@ const sharedWithMeView = {
         const filesList = document.getElementById('files-list');
         if (filesList) {
             if (!this._component) {
-                this._component = new ResourceListComponent(
-                    /** @type {HTMLElement} */ (filesList),
-                    {
-                        selectable: true,
-                        showFavorite: true,
-                        showOwner: true,
-                        showShareBadge: false,
-                        draggable: false,
-                        showContextMenu: true,
-                        isFavorite: (id, type) => favorites.isFavorite(id, type),
-                        isShared: () => false,
-                        onOpen: (item) => ui.openItem(item),
-                        onFavoriteToggle: async (item) => {
-                            const isFile = 'mime_type' in item;
-                            const type = isFile ? 'file' : 'folder';
-                            if (favorites.isFavorite(item.id, type)) {
-                                await favorites.removeFromFavorites(item.id, type);
-                                this._component?.setFavoriteVisualState(item.id, type, false);
-                            } else {
-                                await favorites.addToFavorites(item.id, item.name, type, null);
-                                this._component?.setFavoriteVisualState(item.id, type, true);
-                            }
-                        },
-                        onContextMenu: (item, e) => ui.showContextMenuForItem(item, e),
-                        onSelectionChange: (selectedItems) => {
-                            batchToolbar._selected.clear();
-                            for (const sel of selectedItems) {
-                                const isFile = 'mime_type' in sel;
-                                batchToolbar._selected.set(sel.id, {
-                                    id: sel.id,
-                                    name: sel.name,
-                                    type: isFile ? 'file' : 'folder',
-                                    parentId: isFile
-                                        ? (/** @type {FileItem} */ (sel)).folder_id || ''
-                                        : (/** @type {FolderItem} */ (sel)).parent_id || ''
-                                });
-                            }
-                            batchToolbar._syncUI();
+                this._component = new ResourceListComponent(/** @type {HTMLElement} */ (filesList), {
+                    selectable: true,
+                    showFavorite: true,
+                    showOwner: true,
+                    showShareBadge: false,
+                    draggable: false,
+                    showContextMenu: true,
+                    isFavorite: (id, type) => favorites.isFavorite(id, type),
+                    isShared: () => false,
+                    onOpen: (item) => ui.openItem(item),
+                    onFavoriteToggle: async (item) => {
+                        const isFile = 'mime_type' in item;
+                        const type = isFile ? 'file' : 'folder';
+                        if (favorites.isFavorite(item.id, type)) {
+                            await favorites.removeFromFavorites(item.id, type);
+                            this._component?.setFavoriteVisualState(item.id, type, false);
+                        } else {
+                            await favorites.addToFavorites(item.id, item.name, type, null);
+                            this._component?.setFavoriteVisualState(item.id, type, true);
                         }
+                    },
+                    onContextMenu: (item, e) => ui.showContextMenuForItem(item, e),
+                    onSelectionChange: (selectedItems) => {
+                        batchToolbar._selected.clear();
+                        for (const sel of selectedItems) {
+                            const isFile = 'mime_type' in sel;
+                            batchToolbar._selected.set(sel.id, {
+                                id: sel.id,
+                                name: sel.name,
+                                type: isFile ? 'file' : 'folder',
+                                parentId: isFile ? /** @type {FileItem} */ (sel).folder_id || '' : /** @type {FolderItem} */ (sel).parent_id || ''
+                            });
+                        }
+                        batchToolbar._syncUI();
                     }
-                );
+                });
             }
             batchToolbar.setActiveComponent(this._component);
         }
@@ -138,10 +264,18 @@ const sharedWithMeView = {
         const isFirstPage = this._nextCursor === null;
 
         try {
+            const def = GROUP_BY_DEFS.find((d) => d.key === this._groupBy);
+
+            // When no swimlane grouping is active, sort by resource name so the
+            // list is alphabetical (same expectation as the Files section).
+            // Group-by modes supply their own orderBy via the def.
+            const orderBy = def?.orderBy ?? 'name';
+
             const data = await grants.fetchSharedWithMe({
                 resourceTypes: /** @type {ResourceTypeEnum[]} */ (['file', 'folder']),
                 limit: 50,
-                cursor: this._nextCursor ?? undefined
+                cursor: this._nextCursor ?? undefined,
+                orderBy
             });
 
             this._nextCursor = data.next_cursor ?? null;
@@ -157,12 +291,12 @@ const sharedWithMeView = {
                 return;
             }
 
-            const { folders, files } = this._mapItems(data.items);
+            const items = this._mapItems(data.items);
 
             if (isFirstPage) {
-                this._component?.render(folders, files);
+                this._component?.render(items, def?.keyFn, def?.labelFn);
             } else {
-                this._component?.append(folders, files);
+                this._component?.append(items, def?.keyFn, def?.labelFn);
             }
 
             // Wire owner tooltips after items are in the DOM
@@ -185,35 +319,41 @@ const sharedWithMeView = {
     },
 
     /**
-     * Map `SharedWithMeItem[]` to separate arrays for rendering.
+     * Map `SharedWithMeItem[]` → a flat `(FileItem|FolderItem)[]` in
+     * **server-returned order**.  The order must be preserved so that
+     * swimlane grouping (group by owner / share date) works correctly when
+     * the server interleaves files and folders by the sort key.
+     *
      * Sets `owner_id` to `item.granted_by` so the component stamps
      * `data-owner-id` with the granter's user ID automatically.
+     * Sets `sort_date` (unix seconds) to the grant date so the shareDate
+     * `keyFn` buckets by when the share was created, not the resource's
+     * own modification time.
      *
      * @param {SharedWithMeItem[]} items
-     * @returns {{ folders: FolderItem[], files: FileItem[] }}
+     * @returns {Array<FileItem|FolderItem>}
      */
     _mapItems(items) {
-        /** @type {FolderItem[]} */
-        const folders = [];
+        /** @type {Array<FileItem|FolderItem>} */
+        const result = [];
 
-        /** @type {FileItem[]} */
-        const files = [];
+        /** @param {string} iso @returns {number} */
+        const grantedAtSecs = (iso) => Math.floor(new Date(iso).getTime() / 1000);
 
         for (const item of items) {
             if (item.resource_type === 'folder') {
                 const f = /** @type {FolderItem} */ (item.resource);
-                folders.push(
+                result.push(
                     /** @type {FolderItem} */ ({
                         id: f.id,
                         name: f.name,
                         path: f.path ?? '',
                         parent_id: f.parent_id ?? '',
-                        // Use granted_by as owner_id so the component populates
-                        // data-owner-id with the sharing user's ID.
                         owner_id: item.granted_by,
                         is_root: f.is_root ?? false,
                         created_at: f.created_at,
                         modified_at: f.modified_at,
+                        sort_date: grantedAtSecs(item.granted_at),
                         icon_class: f.icon_class,
                         icon_special_class: f.icon_special_class ?? '',
                         category: 'folder'
@@ -221,21 +361,19 @@ const sharedWithMeView = {
                 );
             } else if (item.resource_type === 'file') {
                 const f = /** @type {FileItem} */ (item.resource);
-                files.push(
+                result.push(
                     /** @type {FileItem} */ ({
                         id: f.id,
                         name: f.name,
                         path: f.path ?? '',
                         folder_id: f.folder_id ?? '',
-                        // Use granted_by as owner_id so the component populates
-                        // data-owner-id with the sharing user's ID.
                         owner_id: item.granted_by,
                         mime_type: f.mime_type,
                         size: f.size,
                         size_formatted: f.size_formatted,
                         created_at: f.created_at,
                         modified_at: f.modified_at,
-                        sort_date: f.modified_at,
+                        sort_date: grantedAtSecs(item.granted_at),
                         icon_class: f.icon_class,
                         icon_special_class: f.icon_special_class ?? '',
                         category: f.category
@@ -244,7 +382,7 @@ const sharedWithMeView = {
             }
         }
 
-        return { folders, files };
+        return result;
     },
 
     // ── "Load more" button ────────────────────────────────────────────────────

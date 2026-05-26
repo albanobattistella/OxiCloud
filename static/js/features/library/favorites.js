@@ -7,9 +7,9 @@
  */
 
 import { ui } from '../../app/ui.js';
+import { ResourceListComponent } from '../../components/resourceList.js';
 import { getCsrfHeaders } from '../../core/csrf.js';
 import { i18n } from '../../core/i18n.js';
-import { ResourceListComponent } from '../../components/resourceList.js';
 import { batchToolbar } from '../files/batchToolbar.js';
 import * as pathTooltip from '../pathTooltip.js';
 
@@ -195,16 +195,13 @@ const favorites = {
                 return;
             }
 
-            /** @type {FolderItem[]} */
-            const folders = [];
-
-            /** @type {FileItem[]} */
-            const files = [];
+            /** @type {Array<FileItem|FolderItem>} */
+            const items = [];
 
             for (const item of this._cache.values()) {
                 // owner_id comes from the backend JOIN (actual file/folder owner)
                 if (item.item_type === 'folder') {
-                    folders.push(
+                    items.push(
                         /** @type {FolderItem} */ ({
                             id: item.item_id,
                             name: item.item_name || item.item_id,
@@ -220,7 +217,7 @@ const favorites = {
                         })
                     );
                 } else {
-                    files.push(
+                    items.push(
                         /** @type {FileItem} */ ({
                             id: item.item_id,
                             name: item.item_name || item.item_id,
@@ -244,50 +241,45 @@ const favorites = {
             const filesList = document.getElementById('files-list');
             if (filesList) {
                 if (!this._component) {
-                    this._component = new ResourceListComponent(
-                        /** @type {HTMLElement} */ (filesList),
-                        {
-                            selectable: true,
-                            showFavorite: true,
-                            showOwner: true,
-                            showShareBadge: true,
-                            draggable: false,
-                            showContextMenu: true,
-                            itemModifierClass: 'favorite-item',
-                            isFavorite: (id, type) => this.isFavorite(id, type),
-                            onOpen: (item) => ui.openItem(item),
-                            onFavoriteToggle: async (item) => {
-                                const isFile = 'mime_type' in item;
-                                const type = isFile ? 'file' : 'folder';
-                                if (this.isFavorite(item.id, type)) {
-                                    await this.removeFromFavorites(item.id, type);
-                                    this._component?.setFavoriteVisualState(item.id, type, false);
-                                } else {
-                                    await this.addToFavorites(item.id, item.name, type, null);
-                                    this._component?.setFavoriteVisualState(item.id, type, true);
-                                }
-                            },
-                            onContextMenu: (item, e) => ui.showContextMenuForItem(item, e),
-                            onSelectionChange: (selectedItems) => {
-                                batchToolbar._selected.clear();
-                                for (const sel of selectedItems) {
-                                    const isFile = 'mime_type' in sel;
-                                    batchToolbar._selected.set(sel.id, {
-                                        id: sel.id,
-                                        name: sel.name,
-                                        type: isFile ? 'file' : 'folder',
-                                        parentId: isFile
-                                            ? (/** @type {FileItem} */ (sel)).folder_id || ''
-                                            : (/** @type {FolderItem} */ (sel)).parent_id || ''
-                                    });
-                                }
-                                batchToolbar._syncUI();
+                    this._component = new ResourceListComponent(/** @type {HTMLElement} */ (filesList), {
+                        selectable: true,
+                        showFavorite: true,
+                        showOwner: true,
+                        showShareBadge: true,
+                        draggable: false,
+                        showContextMenu: true,
+                        itemModifierClass: 'favorite-item',
+                        isFavorite: (id, type) => this.isFavorite(id, type),
+                        onOpen: (item) => ui.openItem(item),
+                        onFavoriteToggle: async (item) => {
+                            const isFile = 'mime_type' in item;
+                            const type = isFile ? 'file' : 'folder';
+                            if (this.isFavorite(item.id, type)) {
+                                await this.removeFromFavorites(item.id, type);
+                                this._component?.setFavoriteVisualState(item.id, type, false);
+                            } else {
+                                await this.addToFavorites(item.id, item.name, type, null);
+                                this._component?.setFavoriteVisualState(item.id, type, true);
                             }
+                        },
+                        onContextMenu: (item, e) => ui.showContextMenuForItem(item, e),
+                        onSelectionChange: (selectedItems) => {
+                            batchToolbar._selected.clear();
+                            for (const sel of selectedItems) {
+                                const isFile = 'mime_type' in sel;
+                                batchToolbar._selected.set(sel.id, {
+                                    id: sel.id,
+                                    name: sel.name,
+                                    type: isFile ? 'file' : 'folder',
+                                    parentId: isFile ? /** @type {FileItem} */ (sel).folder_id || '' : /** @type {FolderItem} */ (sel).parent_id || ''
+                                });
+                            }
+                            batchToolbar._syncUI();
                         }
-                    );
+                    });
                 }
                 batchToolbar.setActiveComponent(this._component);
-                this._component.render(folders, files);
+                this._component.render(items);
                 pathTooltip.init(filesList);
             }
 
