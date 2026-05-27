@@ -21,6 +21,8 @@
 import { escapeHtml, formatDateTime, formatFileSize } from '../core/formatters.js';
 import { i18n } from '../core/i18n.js';
 import { thumbnail } from '../features/thumbnail.js';
+import { systemUsers } from '../model/systemUsers.js';
+import { createUserVignette } from './userVignette.js';
 
 /**
  * @import {FileItem, FolderItem} from '../core/types.js'
@@ -224,6 +226,48 @@ export class ResourceListComponent {
     setViewMode(mode) {
         this._container.classList.toggle('files-grid-view', mode === 'grid');
         this._container.classList.toggle('files-list-view', mode === 'list');
+    }
+
+    /**
+     * Return the registered item for the given id, or `undefined` if absent.
+     * @param {string} id
+     * @returns {FileItem|FolderItem|undefined}
+     */
+    getItem(id) {
+        return this._items.get(id);
+    }
+
+    /**
+     * Append a single item, skipping silently if already present (duplicate guard).
+     * Clears the empty-state placeholder when the first item is added.
+     * @param {FileItem|FolderItem} item
+     */
+    addItem(item) {
+        if (this._items.has(item.id)) return;
+        // Also guard against stale DOM remnants not tracked in _items
+        const isFile = 'mime_type' in item;
+        const attr = isFile ? `data-file-id="${item.id}"` : `data-folder-id="${item.id}"`;
+        if (this._container.querySelector(`.file-item[${attr}]`)) return;
+        this._container.classList.remove('hidden');
+        this._appendItems([item]);
+    }
+
+    /**
+     * Asynchronously fill every un-resolved `.owner-cell` in this component's
+     * container with the display name for its `data-owner-id` attribute.
+     * Idempotent — cells already stamped with `data-owner-resolved` are skipped.
+     * @returns {Promise<void>}
+     */
+    async resolveOwnerCells() {
+        const cells = /** @type {NodeListOf<HTMLElement>} */ (this._container.querySelectorAll('.owner-cell[data-owner-id]:not([data-owner-resolved])'));
+        if (!cells.length) return;
+        systemUsers.prefetch(); // warm cache once (idempotent)
+        for (const cell of cells) {
+            const id = cell.dataset.ownerId;
+            cell.dataset.ownerResolved = '1';
+            if (!id) continue;
+            cell.replaceChildren(createUserVignette(id, 'list'));
+        }
     }
 
     /**

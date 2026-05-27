@@ -283,7 +283,7 @@ const favorites = {
                 pathTooltip.init(filesList);
             }
 
-            await ui.resolveOwnerCells();
+            await this._component?.resolveOwnerCells();
         } catch (error) {
             console.error('Error displaying favorites:', error);
             if (ui?.showNotification) {
