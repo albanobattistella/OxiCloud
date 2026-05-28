@@ -14,6 +14,7 @@ import { ui } from '../../app/ui.js';
 import { ResourceListComponent } from '../../components/resourceList.js';
 import { normalizeDateBucket, sizeBucket } from '../../core/formatters.js';
 import { i18n } from '../../core/i18n.js';
+import * as viewPrefs from '../../core/viewPrefs.js';
 import { batchToolbar } from '../../features/files/batchToolbar.js';
 import * as itemTooltip from '../../features/itemTooltip.js';
 import { favorites } from '../../features/library/favorites.js';
@@ -165,6 +166,7 @@ const sharedWithMeView = {
     setGroupBy(key) {
         if (this._groupBy === key) return;
         this._groupBy = key;
+        viewPrefs.save('sharedwithme', this._groupBy, this._reversed, viewPrefs.load('sharedwithme').view);
         this._nextCursor = null; // restart from first page
         this._component?.clear();
         this._loadPage();
@@ -178,6 +180,7 @@ const sharedWithMeView = {
     setDirection(reversed) {
         if (this._reversed === reversed) return;
         this._reversed = reversed;
+        viewPrefs.save('sharedwithme', this._groupBy, this._reversed, viewPrefs.load('sharedwithme').view);
         this._nextCursor = null;
         this._component?.clear();
         this._loadPage();
@@ -190,8 +193,9 @@ const sharedWithMeView = {
     async init() {
         this._nextCursor = null;
         this._loading = false;
-        this._groupBy = '';
-        this._reversed = false;
+        const _savedPrefs = viewPrefs.load('sharedwithme');
+        this._groupBy = _savedPrefs.groupBy;
+        this._reversed = _savedPrefs.reversed;
 
         this._ensureLoadMoreButton();
 

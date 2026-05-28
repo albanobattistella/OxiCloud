@@ -17,6 +17,7 @@
 import { ResourceListComponent } from '../components/resourceList.js';
 import { normalizeDateBucket, sizeBucket } from '../core/formatters.js';
 import { i18n } from '../core/i18n.js';
+import * as viewPrefs from '../core/viewPrefs.js';
 import { batchToolbar } from '../features/files/batchToolbar.js';
 import { inlineViewer } from '../features/files/inlineViewer.js';
 import { favorites } from '../features/library/favorites.js';
@@ -163,6 +164,7 @@ const filesView = {
     setGroupBy(key) {
         if (_groupBy === key) return;
         _groupBy = key;
+        viewPrefs.save('files', _groupBy, _reversed, viewPrefs.load('files').view);
         _nextCursor = null;
         _component?.clear();
         _loadPage({ isFirstPage: true });
@@ -176,6 +178,7 @@ const filesView = {
     setDirection(reversed) {
         if (_reversed === reversed) return;
         _reversed = reversed;
+        viewPrefs.save('files', _groupBy, _reversed, viewPrefs.load('files').view);
         _nextCursor = null;
         _component?.clear();
         _loadPage({ isFirstPage: true });
@@ -359,10 +362,11 @@ async function loadFiles(options = { insertHistory: true }) {
         return;
     }
 
-    // Reset cursor, groupBy, and direction on navigation to a different folder.
+    // Reset cursor on navigation; restore saved group-by/direction preferences.
     _nextCursor = null;
-    _groupBy = '';
-    _reversed = false;
+    const _savedPrefs = viewPrefs.load('files');
+    _groupBy = _savedPrefs.groupBy;
+    _reversed = _savedPrefs.reversed;
 
     // Delay spinner so fast loads avoid the flash
     const spinnerTimeout = setTimeout(() => {

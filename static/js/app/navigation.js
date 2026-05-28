@@ -3,7 +3,9 @@
  * Extracted from main.js to keep navigation concerns isolated.
  */
 
+import { applyGroupByMenuState } from '../core/groupBySync.js';
 import { i18n } from '../core/i18n.js';
+import * as viewPrefs from '../core/viewPrefs.js';
 import { batchToolbar } from '../features/files/batchToolbar.js';
 import { favorites } from '../features/library/favorites.js';
 import { musicView } from '../features/library/music.js';
@@ -22,6 +24,14 @@ import { ui } from './ui.js';
  * Sync the hidden class and inline display for the grid/list containers
  * based on the current view preference.
  */
+/**
+ * Restore the grid/list view preference for a section before rendering.
+ * @param {string} section  Matches `app.currentSection` values.
+ */
+function restoreView(section) {
+    app.currentView = viewPrefs.resolveView(section);
+}
+
 function syncViewContainers() {
     const filesList = document.getElementById('files-list');
     const gridViewBtn = document.getElementById('grid-view-btn');
@@ -225,11 +235,16 @@ function switchToSharedWithMeSection() {
     setGroupByView(sharedWithMeView);
     syncGroupByMenu(sharedWithMeView.groupByDefs);
 
+    // Restore the saved group-by selection in the dropdown.
+    const swmPrefs = viewPrefs.load('sharedwithme');
+    applyGroupByMenuState(swmPrefs.groupBy, swmPrefs.reversed);
+
     // Show the Owner column — names are resolved async after render.
     ui.setOwnerColumnVisible(true);
 
     // Show the standard files container and respect grid/list preference
     toggleFileContainer(true);
+    restoreView('sharedwithme');
     syncViewContainers();
 
     if (batchToolbar) batchToolbar.clear();
@@ -246,6 +261,10 @@ function switchToFilesSection() {
     setGroupByView(filesView);
     syncGroupByMenu(filesView.groupByDefs);
 
+    // Restore the saved group-by selection in the dropdown.
+    const filesPrefs = viewPrefs.load('files');
+    applyGroupByMenuState(filesPrefs.groupBy, filesPrefs.reversed);
+
     // Show owner column in the Files section
     ui.setOwnerColumnVisible(true);
 
@@ -257,6 +276,7 @@ function switchToFilesSection() {
     toggleFileContainer(true);
 
     // ensure correct view
+    restoreView('files');
     syncViewContainers();
 
     //reset files view + remove any error
@@ -282,6 +302,10 @@ function switchToFavoritesSection() {
     setGroupByView(favoritesView);
     syncGroupByMenu(favoritesView.groupByDefs);
 
+    // Restore the saved group-by selection in the dropdown.
+    const favPrefs = viewPrefs.load('favorites');
+    applyGroupByMenuState(favPrefs.groupBy, favPrefs.reversed);
+
     // Show the Owner column — names are resolved async after render.
     ui.setOwnerColumnVisible(true);
 
@@ -293,6 +317,7 @@ function switchToFavoritesSection() {
     toggleFileContainer(true);
 
     // ensure correct view
+    restoreView('favorites');
     syncViewContainers();
 
     if (batchToolbar) batchToolbar.clear();
@@ -320,6 +345,7 @@ function switchToRecentFilesSection() {
     toggleFileContainer(true);
 
     // ensure correct view
+    restoreView('recent');
     syncViewContainers();
 
     //reset files view + remove any error
@@ -381,6 +407,7 @@ function switchToTrashSection() {
     ui.resetFilesList();
 
     //ensure buttons match the current view
+    restoreView('trash');
     syncViewContainers();
 
     // Load trash items
