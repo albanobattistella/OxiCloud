@@ -517,6 +517,7 @@ export class ResourceListComponent {
         const thumb = /** @type {HTMLImageElement | null} */ (el.querySelector('.file-thumb'));
         if (thumb) {
             thumb.addEventListener('error', () => {
+                console.log(`no thumbnail for ${file.id} (${file.name}), request thumbnail generation from client side`);
                 thumb.classList.add('hidden');
                 thumbnail?.queueGenerate(file, (dataUrl) => {
                     thumb.src = dataUrl;
