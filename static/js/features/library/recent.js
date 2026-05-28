@@ -11,7 +11,7 @@ import { ResourceListComponent } from '../../components/resourceList.js';
 import { getCsrfHeaders } from '../../core/csrf.js';
 import { i18n } from '../../core/i18n.js';
 import { batchToolbar } from '../files/batchToolbar.js';
-import * as pathTooltip from '../pathTooltip.js';
+import * as itemTooltip from '../itemTooltip.js';
 
 /** @import {FileItem, FolderItem, ItemTypeEnum, RecentItem} from '../../core/types.js' */
 
@@ -208,7 +208,7 @@ const recent = {
                 }
                 batchToolbar.setActiveComponent(this._component);
                 this._component.render(items);
-                pathTooltip.init(filesList);
+                itemTooltip.init(filesList);
             }
         } catch (error) {
             console.error('Error displaying recent files:', error);

@@ -15,8 +15,8 @@ import { ResourceListComponent } from '../../components/resourceList.js';
 import { normalizeDateBucket, sizeBucket } from '../../core/formatters.js';
 import { i18n } from '../../core/i18n.js';
 import { batchToolbar } from '../../features/files/batchToolbar.js';
+import * as itemTooltip from '../../features/itemTooltip.js';
 import { favorites } from '../../features/library/favorites.js';
-import { ownerTooltip } from '../../features/ownerTooltip.js';
 import { grants } from '../../model/grants.js';
 import { systemUsers } from '../../model/systemUsers.js';
 
@@ -262,7 +262,7 @@ const sharedWithMeView = {
         batchToolbar.setActiveComponent(null);
 
         const filesList = document.getElementById('files-list');
-        if (filesList) ownerTooltip.destroy(filesList);
+        if (filesList) itemTooltip.destroy(filesList);
     },
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -319,7 +319,7 @@ const sharedWithMeView = {
 
             // Wire owner tooltips after items are in the DOM
             const filesList = document.getElementById('files-list');
-            if (filesList) ownerTooltip.init(filesList);
+            if (filesList) itemTooltip.init(filesList);
 
             // Fill the Owner column cells (idempotent: skips already-resolved rows).
             await this._component?.resolveOwnerCells();

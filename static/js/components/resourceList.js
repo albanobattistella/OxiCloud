@@ -407,6 +407,7 @@ export class ResourceListComponent {
         el.dataset.folderName = folder.name;
         el.dataset.parentId = folder.parent_id || '';
         if (folder.path) el.dataset.path = folder.path;
+        if (folder.owner_id) el.dataset.ownerId = folder.owner_id;
         if (cfg.draggable) el.setAttribute('draggable', 'true');
 
         const isFav = cfg.isFavorite ? cfg.isFavorite(folder.id, 'folder') : false;
@@ -463,6 +464,7 @@ export class ResourceListComponent {
         el.dataset.fileName = file.name;
         el.dataset.folderId = file.folder_id || '';
         if (file.path) el.dataset.path = file.path;
+        if (file.owner_id) el.dataset.ownerId = file.owner_id;
         if (cfg.draggable) el.setAttribute('draggable', 'true');
 
         el.innerHTML = `
