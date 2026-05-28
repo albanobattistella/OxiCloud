@@ -19,6 +19,7 @@
 
 import { ui } from '../../app/ui.js';
 import { ResourceListComponent } from '../../components/resourceList.js';
+import { createUserVignette } from '../../components/userVignette.js';
 import { normalizeDateBucket, sizeBucket } from '../../core/formatters.js';
 import { i18n } from '../../core/i18n.js';
 import * as viewPrefs from '../../core/viewPrefs.js';
@@ -33,7 +34,8 @@ import { systemUsers } from '../../model/systemUsers.js';
 /**
  * @typedef {{ key: string, label: string, orderBy: string,
  *             keyFn: (item: FileItem|FolderItem) => string|null,
- *             labelFn?: (key: string) => string }} GroupByDef
+ *             labelFn?: (key: string) => string,
+ *             headerNodeFn?: (key: string) => HTMLElement }} GroupByDef
  */
 
 /**
@@ -52,6 +54,19 @@ import { systemUsers } from '../../model/systemUsers.js';
  * @type {GroupByDef[]}
  */
 const GROUP_BY_DEFS = [
+    {
+        key: 'owner',
+        get label() {
+            return i18n.t('groupby.owner', 'Owner');
+        },
+        orderBy: 'owner',
+        keyFn: (item) => {
+            const r = /** @type {Record<string,string>} */ (/** @type {unknown} */ (item));
+            return r.owner_id || null;
+        },
+        labelFn: (id) => systemUsers.getDisplayNameSync(id),
+        headerNodeFn: (id) => createUserVignette(id, 'sm')
+    },
     {
         key: 'type',
         get label() {
@@ -81,6 +96,18 @@ const GROUP_BY_DEFS = [
         }
     },
     {
+        key: 'size',
+        get label() {
+            return i18n.t('groupby.size', 'Size');
+        },
+        orderBy: 'size',
+        keyFn: (item) => {
+            if (!('mime_type' in item)) return sizeBucket(-1);
+            const r = /** @type {Record<string,number>} */ (/** @type {unknown} */ (item));
+            return sizeBucket(r.size ?? 0);
+        }
+    },
+    {
         key: 'accessedAt',
         get label() {
             return i18n.t('groupby.accessedAt', 'Accessed date');
@@ -102,30 +129,6 @@ const GROUP_BY_DEFS = [
             const r = /** @type {Record<string,number>} */ (/** @type {unknown} */ (item));
             return r.modified_at ? normalizeDateBucket(r.modified_at) : null;
         }
-    },
-    {
-        key: 'size',
-        get label() {
-            return i18n.t('groupby.size', 'Size');
-        },
-        orderBy: 'size',
-        keyFn: (item) => {
-            if (!('mime_type' in item)) return sizeBucket(-1);
-            const r = /** @type {Record<string,number>} */ (/** @type {unknown} */ (item));
-            return sizeBucket(r.size ?? 0);
-        }
-    },
-    {
-        key: 'owner',
-        get label() {
-            return i18n.t('groupby.owner', 'Owner');
-        },
-        orderBy: 'owner',
-        keyFn: (item) => {
-            const r = /** @type {Record<string,string>} */ (/** @type {unknown} */ (item));
-            return r.owner_id || null;
-        },
-        labelFn: (id) => systemUsers.getDisplayNameSync(id)
     }
 ];
 
@@ -311,9 +314,9 @@ const recentView = {
             const items = this._mapItems(data.items);
 
             if (isFirstPage) {
-                this._component?.render(items, def?.keyFn, def?.labelFn);
+                this._component?.render(items, def?.keyFn, def?.labelFn, def?.headerNodeFn);
             } else {
-                this._component?.append(items, def?.keyFn, def?.labelFn);
+                this._component?.append(items, def?.keyFn, def?.labelFn, def?.headerNodeFn);
             }
 
             // Wire unified item tooltip (owner + path) after items are in the DOM.

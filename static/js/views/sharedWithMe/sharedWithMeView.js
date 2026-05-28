@@ -12,6 +12,7 @@
 
 import { ui } from '../../app/ui.js';
 import { ResourceListComponent } from '../../components/resourceList.js';
+import { createUserVignette } from '../../components/userVignette.js';
 import { normalizeDateBucket, sizeBucket } from '../../core/formatters.js';
 import { i18n } from '../../core/i18n.js';
 import * as viewPrefs from '../../core/viewPrefs.js';
@@ -26,7 +27,8 @@ import { systemUsers } from '../../model/systemUsers.js';
 /**
  * @typedef {{ key: string, label: string, orderBy: string,
  *             keyFn: (item: FileItem|FolderItem) => string|null,
- *             labelFn?: (key: string) => string }} GroupByDef
+ *             labelFn?: (key: string) => string,
+ *             headerNodeFn?: (key: string) => HTMLElement }} GroupByDef
  */
 
 /**
@@ -42,6 +44,24 @@ import { systemUsers } from '../../model/systemUsers.js';
  * @type {GroupByDef[]}
  */
 const GROUP_BY_DEFS = [
+    {
+        key: 'owner',
+        // label is accessed via syncGroupByMenu → read at section-switch time,
+        // when translations are guaranteed to be loaded.
+        get label() {
+            return i18n.t('groupby.owner', 'Owner');
+        },
+        orderBy: 'granted_by',
+        // keyFn groups by UUID — stable and unique, avoids collisions between
+        // users with the same display name.
+        keyFn: (item) => {
+            const r = /** @type {Record<string,string>} */ (/** @type {unknown} */ (item));
+            return r.owner_id || null;
+        },
+        // labelFn resolves UUID → display name from the pre-fetched cache.
+        labelFn: (id) => systemUsers.getDisplayNameSync(id),
+        headerNodeFn: (id) => createUserVignette(id, 'sm')
+    },
     {
         key: 'type',
         get label() {
@@ -73,23 +93,6 @@ const GROUP_BY_DEFS = [
             };
             return labels[key] ?? key;
         }
-    },
-    {
-        key: 'owner',
-        // label is accessed via syncGroupByMenu → read at section-switch time,
-        // when translations are guaranteed to be loaded.
-        get label() {
-            return i18n.t('groupby.owner', 'Owner');
-        },
-        orderBy: 'granted_by',
-        // keyFn groups by UUID — stable and unique, avoids collisions between
-        // users with the same display name.
-        keyFn: (item) => {
-            const r = /** @type {Record<string,string>} */ (/** @type {unknown} */ (item));
-            return r.owner_id || null;
-        },
-        // labelFn resolves UUID → display name from the pre-fetched cache.
-        labelFn: (id) => systemUsers.getDisplayNameSync(id)
     },
     {
         key: 'size',
@@ -316,9 +319,9 @@ const sharedWithMeView = {
             const items = this._mapItems(data.items);
 
             if (isFirstPage) {
-                this._component?.render(items, def?.keyFn, def?.labelFn);
+                this._component?.render(items, def?.keyFn, def?.labelFn, def?.headerNodeFn);
             } else {
-                this._component?.append(items, def?.keyFn, def?.labelFn);
+                this._component?.append(items, def?.keyFn, def?.labelFn, def?.headerNodeFn);
             }
 
             // Wire owner tooltips after items are in the DOM

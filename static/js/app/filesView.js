@@ -77,6 +77,19 @@ const GROUP_BY_DEFS = [
         }
     },
     {
+        key: 'size',
+        get label() {
+            return i18n.t('groupby.size', 'Size');
+        },
+        orderBy: 'size',
+        // sizeBucket(-1) → "Folders" sentinel; no labelFn needed.
+        keyFn: (item) => {
+            if (!('mime_type' in item)) return sizeBucket(-1);
+            const r = /** @type {Record<string, number>} */ (/** @type {unknown} */ (item));
+            return sizeBucket(r.size ?? 0);
+        }
+    },
+    {
         key: 'modifiedAt',
         get label() {
             return i18n.t('groupby.modifiedAt', 'Modified date');
@@ -97,19 +110,6 @@ const GROUP_BY_DEFS = [
         keyFn: (item) => {
             const r = /** @type {Record<string, number>} */ (/** @type {unknown} */ (item));
             return r.created_at ? normalizeDateBucket(r.created_at) : null;
-        }
-    },
-    {
-        key: 'size',
-        get label() {
-            return i18n.t('groupby.size', 'Size');
-        },
-        orderBy: 'size',
-        // sizeBucket(-1) → "Folders" sentinel; no labelFn needed.
-        keyFn: (item) => {
-            if (!('mime_type' in item)) return sizeBucket(-1);
-            const r = /** @type {Record<string, number>} */ (/** @type {unknown} */ (item));
-            return sizeBucket(r.size ?? 0);
         }
     }
 ];
