@@ -162,12 +162,30 @@ const ACTIONS_BAR_TEMPLATES = {
         <div class="action-buttons" id="default-buttons"></div>
         ${_batchToolbarButons}
         ${_toggleButtons}
+    `,
+    shared: `
+        <div class="action-buttons" id="default-buttons"></div>
+        <div class="view-toggle">
+            <div class="group-by-selector hidden" id="group-by-selector">
+                <button class="toggle-btn group-by-btn" id="group-by-btn"
+                        title="Group by" data-i18n-title="groupby.title">
+                    <i class="fas fa-layer-group"></i>
+                    <span class="group-by-label"></span>
+                </button>
+                <button class="toggle-btn sort-dir-btn" id="sort-dir-btn"
+                        title="Sort direction" data-i18n-title="sortdir.title">
+                    <i class="fas fa-arrow-up" id="sort-dir-icon"></i>
+                </button>
+                <div class="group-by-menu hidden" id="group-by-menu"></div>
+            </div>
+            <span class="view-toggle-separator hidden" id="group-by-separator"></span>
+        </div>
     `
 };
 
 /**
  *
- * @param {'files' | 'trash' | 'favorites' | 'recent' | 'sharedwithme' | 'hidden'} mode
+ * @param {'files' | 'trash' | 'favorites' | 'recent' | 'sharedwithme' | 'shared' | 'hidden'} mode
  * @param {boolean} [force=false]
  * @returns
  */
@@ -259,8 +277,12 @@ function syncGroupByMenu(defs = []) {
 
     // Rebuild menu options — call i18n.t() directly so each label is resolved
     // at call time (translations are loaded by the time any section switch runs).
-    menu.innerHTML = `<button class="group-by-option active" data-group-by="">${escapeHtml(i18n.t('groupby.none', 'None'))}</button>`;
+    // A def with key='' lets the section override the default "None" label.
+    const noneOverride = defs.find((d) => d.key === '');
+    const noneLabel = noneOverride ? noneOverride.label : i18n.t('groupby.none', 'None');
+    menu.innerHTML = `<button class="group-by-option active" data-group-by="">${escapeHtml(noneLabel)}</button>`;
     for (const def of defs) {
+        if (def.key === '') continue;
         menu.insertAdjacentHTML('beforeend', `<button class="group-by-option" data-group-by="${escapeHtml(def.key)}">${escapeHtml(def.label)}</button>`);
     }
 
@@ -640,8 +662,10 @@ function setupEventListeners() {
         } else {
             // change is from history, data provided in event
             switchSectionTo(e.state.section);
-            app.currentPath = e.state.id;
-            loadFiles({ insertHistory: false });
+            if (e.state.section === 'files') {
+                app.currentPath = e.state.id;
+                loadFiles({ insertHistory: false });
+            }
         }
     });
 

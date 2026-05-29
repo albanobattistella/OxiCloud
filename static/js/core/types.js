@@ -81,9 +81,9 @@
 
 /**
  * @typedef {Object} UpdateShare
- * @property {string|null} password
- * @property {number|null} expires_at - timestamp
- * @property {SharePermissions|null} permissions
+ * @property {string|null}            [password]
+ * @property {number|null}            [expires_at]
+ * @property {SharePermissions|null}  [permissions]
  */
 
 /**
@@ -332,6 +332,35 @@
  * @typedef {Object} SharedWithMeResponse
  * @property {SharedWithMeItem[]}  items
  * @property {string|undefined}    [next_cursor]  - Absent when the last page is reached.
+ */
+
+/**
+ * One (subject, permissions) entry within an outgoing resource item.
+ * @typedef {Object} OutgoingResourceGrant
+ * @property {string}                    grant_id
+ * @property {'user'|'token'}            subject_type
+ * @property {string}                    subject_id
+ * @property {string}                    subject_display - Username (users) or share name (tokens).
+ * @property {'viewer'|'editor'|'admin'} role
+ * @property {string}                    granted_at   - ISO-8601
+ * @property {string|null}               [expires_at] - ISO-8601 or absent.
+ * @property {boolean}                   has_password - True when a token subject has a password set.
+ */
+
+/**
+ * One item returned by `GET /api/grants/outgoing/resources`.
+ * @typedef {Object} OutgoingResourceItem
+ * @property {ResourceTypeEnum}          resource_type
+ * @property {string}                    first_shared_at  - ISO-8601 earliest grant date.
+ * @property {FileItem|FolderItem}       resource         - Full resource details.
+ * @property {OutgoingResourceGrant[]}   grants           - One entry per (subject, permissions).
+ */
+
+/**
+ * Response for `GET /api/grants/outgoing/resources`.
+ * @typedef {Object} OutgoingResourcesResponse
+ * @property {OutgoingResourceItem[]}  items
+ * @property {string|undefined}        [next_cursor]  - Absent when the last page is reached.
  */
 
 /**

@@ -155,6 +155,20 @@ const fileSharing = {
     },
 
     /**
+     * Fetch a single share by its UUID and return the full ShareItem.
+     * Used to resolve a token's URL on demand (lazy fetch on copy-link click).
+     * @param {string} shareId
+     * @returns {Promise<import('../../core/types.js').ShareItem>}
+     */
+    async getShareById(shareId) {
+        const res = await fetch(`/api/shares/${shareId}`, {
+            headers: this._headers(false)
+        });
+        if (!res.ok) throw new Error(`getShareById ${shareId}: HTTP ${res.status}`);
+        return res.json();
+    },
+
+    /**
      * Copy a shared link to clipboard
      * @param {string} url
      */

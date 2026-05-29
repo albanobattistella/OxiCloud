@@ -20,8 +20,8 @@
 
 import { escapeHtml, formatDateTime, formatFileSize } from '../core/formatters.js';
 import { i18n } from '../core/i18n.js';
-import { thumbnail } from '../features/thumbnail.js';
 import { systemUsers } from '../model/systemUsers.js';
+import { buildResourceIcon } from './resourceIcon.js';
 import { createUserVignette } from './userVignette.js';
 
 /**
@@ -444,9 +444,7 @@ export class ResourceListComponent {
         el.innerHTML = `
             ${cfg.selectable ? '<div class="checkbox-cell"><input type="checkbox" class="item-checkbox"></div>' : ''}
             <div class="name-cell">
-                <div class="file-icon folder-icon">
-                    <i class="fas fa-folder"></i>
-                </div>
+                <div class="resource-icon-slot"></div>
                 <span>${escapeHtml(folder.name)}</span>
                 ${cfg.showFavorite ? `<div class="file-badge file-badge-favorite${isFav ? '' : ' hidden'}"><i class="fas fa-star favorite-star-inline"></i></div>` : ''}
                 ${cfg.showShareBadge ? `<div class="file-badge file-badge-shared${isShared ? '' : ' hidden'}"><i class="fas fa-oxiexport"></i></div>` : ''}
@@ -461,6 +459,7 @@ export class ResourceListComponent {
             </div>
         `;
 
+        el.querySelector('.resource-icon-slot')?.replaceWith(buildResourceIcon(folder, 'folder'));
         this._bindItemEvents(el, folder);
         return el;
     }
@@ -472,8 +471,6 @@ export class ResourceListComponent {
      */
     _createFileItem(file) {
         const cfg = this._cfg;
-        const iconClass = file.icon_class || 'fas fa-file';
-        const iconSpecialClass = file.icon_special_class || '';
         const cat = file.category || '';
         const typeLabel = cat ? i18n.t(`files.file_types.${cat.toLowerCase()}`) || cat : i18n.t('files.file_types.document');
         const fileSize = file.size_formatted || formatFileSize(file.size);
@@ -481,7 +478,6 @@ export class ResourceListComponent {
         const formattedDate = formatDateTime(new Date(dateVal));
         const isFav = cfg.isFavorite ? cfg.isFavorite(file.id, 'file') : false;
         const isShared = cfg.isShared ? cfg.isShared(file.id, 'file') : false;
-        const canThumbnail = thumbnail?.canHandle(file) ?? false;
 
         const el = document.createElement('div');
         const modClass = cfg.itemModifierClass ? ` ${cfg.itemModifierClass}` : '';
@@ -496,10 +492,7 @@ export class ResourceListComponent {
         el.innerHTML = `
             ${cfg.selectable ? '<div class="checkbox-cell"><input type="checkbox" class="item-checkbox"></div>' : ''}
             <div class="name-cell">
-                <div class="file-icon ${iconSpecialClass}">
-                    ${canThumbnail ? `<img class="file-thumb" src="/api/files/${file.id}/thumbnail/icon" loading="lazy" alt="">` : ''}
-                    <i class="${iconClass}"></i>
-                </div>
+                <div class="resource-icon-slot"></div>
                 <span>${escapeHtml(file.name)}</span>
                 ${cfg.showFavorite ? `<div class="file-badge file-badge-favorite${isFav ? '' : ' hidden'}"><i class="fas fa-star favorite-star-inline"></i></div>` : ''}
                 ${cfg.showShareBadge ? `<div class="file-badge file-badge-shared${isShared ? '' : ' hidden'}"><i class="fas fa-oxiexport"></i></div>` : ''}
@@ -514,18 +507,7 @@ export class ResourceListComponent {
             </div>
         `;
 
-        const thumb = /** @type {HTMLImageElement | null} */ (el.querySelector('.file-thumb'));
-        if (thumb) {
-            thumb.addEventListener('error', () => {
-                console.log(`no thumbnail for ${file.id} (${file.name}), request thumbnail generation from client side`);
-                thumb.classList.add('hidden');
-                thumbnail?.queueGenerate(file, (dataUrl) => {
-                    thumb.src = dataUrl;
-                    thumb.classList.remove('hidden');
-                });
-            });
-        }
-
+        el.querySelector('.resource-icon-slot')?.replaceWith(buildResourceIcon(file, 'file'));
         this._bindItemEvents(el, file);
         return el;
     }

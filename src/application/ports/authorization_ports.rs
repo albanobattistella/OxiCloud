@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use crate::common::errors::DomainError;
 use crate::domain::services::authorization::{
-    Grant, GrantCursor, IncomingGrantSummary, Permission, Resource, ResourceKind, Subject,
+    Grant, GrantCursor, IncomingGrantSummary, OutgoingResourceSummary, Permission, Resource,
+    ResourceKind, Subject,
 };
 
 pub trait AuthorizationEngine: Send + Sync + 'static {
@@ -96,6 +97,21 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
     /// Grants Outgoing — grants created by `granted_by`. Used by
     /// `GET /api/grants/outgoing` ("things I've shared with others").
     async fn list_outgoing_grants(&self, granted_by: Uuid) -> Result<Vec<Grant>, DomainError>;
+
+    /// Cursor-paginated list of resources that `granted_by` has shared with
+    /// others. Multiple permission rows for the same (subject, resource) pair
+    /// are collapsed into one `OutgoingGrantEntry`; multiple subjects on the
+    /// same resource are grouped into one `OutgoingResourceSummary`.
+    ///
+    /// Returns `(summaries, next_cursor)`.
+    async fn list_outgoing_resources_paged(
+        &self,
+        granted_by: Uuid,
+        limit: u32,
+        cursor: Option<GrantCursor>,
+        sort_by: &str,
+        reverse: bool,
+    ) -> Result<(Vec<OutgoingResourceSummary>, Option<GrantCursor>), DomainError>;
 
     /// Create a grant. Idempotent — duplicates are absorbed by the UNIQUE
     /// constraint; if the row already exists its `expires_at` is updated.

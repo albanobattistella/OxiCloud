@@ -325,6 +325,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
                 get(grant_handler::list_shared_with_me),
             )
             .route("/outgoing", get(grant_handler::list_outgoing))
+            .route("/outgoing/resources", get(grant_handler::list_my_shares))
             .with_state(app_state.clone())
     };
 

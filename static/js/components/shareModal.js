@@ -20,22 +20,12 @@ import { fileSharing } from '../features/sharing/fileSharing.js';
 import { addressBook, SYSTEM_BOOK_ID } from '../model/addressBook.js';
 import { grants } from '../model/grants.js';
 import { systemUsers } from '../model/systemUsers.js';
+import { buildExpiryChip } from '../utils/expiryChip.js';
+import { buildPasswordChip } from '../utils/passwordChip.js';
 import { Modal } from './modal.js';
 import { createUserVignette } from './userVignette.js';
 
 /** @import {FileItem, FolderItem, Grant, ContactItem, MemberEntry, LinkEntry, DraftLink, ShareRoleEnum} from '../core/types.js' */
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-/**
- * Format a YYYY-MM-DD date string for display ("Dec 31, 2026").
- * @param {string} dateStr
- * @returns {string}
- */
-function _formatExpiryDate(dateStr) {
-    const d = new Date(`${dateStr}T00:00:00`);
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}
 
 /** Permissions that belong to each role (must mirror the Rust DTO). */
 const ROLE_PERMISSIONS = {
@@ -274,9 +264,9 @@ const shareModal = {
         const roleSelect = document.createElement('select');
         roleSelect.className = 'smd-role-select';
         for (const [val, label] of [
-            ['viewer', i18n.t('share.role.viewer', 'Viewer')],
-            ['editor', i18n.t('share.role.editor', 'Editor')],
-            ['admin', i18n.t('share.role.admin', 'Admin')]
+            ['viewer', i18n.t('share.role.canView', 'Can view')],
+            ['editor', i18n.t('share.role.canEdit', 'Can edit')],
+            ['admin', i18n.t('share.role.canManage', 'Can manage')]
         ]) {
             const opt = document.createElement('option');
             opt.value = val;
@@ -505,9 +495,9 @@ const shareModal = {
             header.className = 'smd-group-header';
 
             const labelMap = {
-                admin: i18n.t('share.role.admin', 'Admin'),
-                editor: i18n.t('share.role.editor', 'Editor'),
-                viewer: i18n.t('share.role.viewer', 'Viewer')
+                admin: i18n.t('share.role.canManage', 'Can manage'),
+                editor: i18n.t('share.role.canEdit', 'Can edit'),
+                viewer: i18n.t('share.role.canView', 'Can view')
             };
             const badge = document.createElement('span');
             badge.className = 'smd-group-badge';
@@ -538,9 +528,9 @@ const shareModal = {
         const roleSelect = document.createElement('select');
         roleSelect.className = 'smd-member-role-select';
         for (const [val, label] of [
-            ['viewer', i18n.t('share.role.viewer', 'Viewer')],
-            ['editor', i18n.t('share.role.editor', 'Editor')],
-            ['admin', i18n.t('share.role.admin', 'Admin')]
+            ['viewer', i18n.t('share.role.canView', 'Can view')],
+            ['editor', i18n.t('share.role.canEdit', 'Can edit')],
+            ['admin', i18n.t('share.role.canManage', 'Can manage')]
         ]) {
             const opt = document.createElement('option');
             opt.value = val;
@@ -587,78 +577,12 @@ const shareModal = {
     // ── Expiry chip toggle ─────────────────────────────────────────────────────
 
     /**
-     * Build a compact expiry chip that toggles to an inline date input on click.
-     *
-     * Chip states:
-     *   • "∞ No expiry" — dashed border, faint text (value is null)
-     *   • "⏱ Dec 31, 2026 ×" — solid border, with a clear button (value is set)
-     *
      * @param {string|null} initialValue  - YYYY-MM-DD or null
-     * @param {(v: string|null) => void}  onChange  - called whenever the value changes
+     * @param {(v: string|null) => void}  onChange
      * @returns {HTMLElement}
      */
     _buildExpiryChip(initialValue, onChange) {
-        let current = initialValue;
-
-        const wrap = document.createElement('div');
-        wrap.className = 'smd-expiry-chip-wrap';
-
-        const chip = document.createElement('button');
-        chip.type = 'button';
-
-        const dateInput = document.createElement('input');
-        dateInput.type = 'date';
-        dateInput.className = 'smd-expiry-date-input hidden';
-
-        const updateChip = () => {
-            if (current) {
-                chip.className = 'smd-expiry-chip smd-expiry-chip--set';
-                chip.innerHTML =
-                    `<i class="fas fa-clock"></i> ${_formatExpiryDate(current)}` +
-                    `<span class="smd-expiry-chip-clear" title="${i18n.t('actions.clear', 'Clear')}">×</span>`;
-                chip.querySelector('.smd-expiry-chip-clear')?.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    current = null;
-                    onChange(null);
-                    updateChip();
-                });
-            } else {
-                chip.className = 'smd-expiry-chip';
-                chip.innerHTML = `<i class="fas fa-infinity"></i> ${i18n.t('share.noExpiry', 'No expiry')}`;
-            }
-        };
-
-        chip.addEventListener('click', () => {
-            chip.classList.add('hidden');
-            if (current) dateInput.value = current;
-            dateInput.classList.remove('hidden');
-            dateInput.focus();
-        });
-
-        const confirm = () => {
-            const val = dateInput.value || null;
-            current = val;
-            onChange(val);
-            dateInput.classList.add('hidden');
-            chip.classList.remove('hidden');
-            updateChip();
-        };
-        dateInput.addEventListener('blur', confirm);
-        dateInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                confirm();
-            }
-            if (e.key === 'Escape') {
-                dateInput.classList.add('hidden');
-                chip.classList.remove('hidden');
-            }
-        });
-
-        updateChip();
-        wrap.appendChild(chip);
-        wrap.appendChild(dateInput);
-        return wrap;
+        return buildExpiryChip(initialValue, onChange);
     },
 
     /**
@@ -667,72 +591,7 @@ const shareModal = {
      * @returns {HTMLElement}
      */
     _buildPasswordChip(initialHasPassword, onChange) {
-        let hasPassword = initialHasPassword;
-
-        const wrap = document.createElement('div');
-        wrap.className = 'smd-expiry-chip-wrap';
-
-        const chip = document.createElement('button');
-        chip.type = 'button';
-
-        const pwInput = document.createElement('input');
-        pwInput.type = 'password';
-        pwInput.className = 'smd-expiry-date-input hidden';
-        pwInput.placeholder = i18n.t('dialogs.password', 'Password');
-        pwInput.autocomplete = 'new-password';
-
-        const updateChip = () => {
-            if (hasPassword) {
-                chip.className = 'smd-expiry-chip smd-expiry-chip--set';
-                chip.innerHTML =
-                    `<i class="fas fa-lock"></i> ${i18n.t('share.passwordProtected', 'Password')}` +
-                    `<span class="smd-expiry-chip-clear" title="${i18n.t('actions.clear', 'Clear')}">×</span>`;
-                chip.querySelector('.smd-expiry-chip-clear')?.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    hasPassword = false;
-                    onChange('');
-                    updateChip();
-                });
-            } else {
-                chip.className = 'smd-expiry-chip';
-                chip.innerHTML = `<i class="fas fa-lock-open"></i> ${i18n.t('share.noPassword', 'No password')}`;
-            }
-        };
-
-        chip.addEventListener('click', () => {
-            chip.classList.add('hidden');
-            pwInput.value = '';
-            pwInput.classList.remove('hidden');
-            pwInput.focus();
-        });
-
-        const confirm = () => {
-            const val = pwInput.value;
-            pwInput.classList.add('hidden');
-            chip.classList.remove('hidden');
-            if (val) {
-                hasPassword = true;
-                onChange(val);
-            }
-            updateChip();
-        };
-
-        pwInput.addEventListener('blur', confirm);
-        pwInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                confirm();
-            }
-            if (e.key === 'Escape') {
-                pwInput.classList.add('hidden');
-                chip.classList.remove('hidden');
-            }
-        });
-
-        updateChip();
-        wrap.appendChild(chip);
-        wrap.appendChild(pwInput);
-        return wrap;
+        return buildPasswordChip(initialHasPassword, onChange);
     },
 
     // ── Links section ──────────────────────────────────────────────────────────

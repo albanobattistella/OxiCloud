@@ -36,7 +36,8 @@ use sqlx::PgPool;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::common::errors::DomainError;
 use crate::domain::services::authorization::{
-    Grant, GrantCursor, IncomingGrantSummary, Permission, Resource, ResourceKind, Subject,
+    Grant, GrantCursor, IncomingGrantSummary, OutgoingGrantEntry, OutgoingResourceSummary,
+    Permission, Resource, ResourceKind, Subject,
 };
 use crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository;
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
@@ -664,6 +665,619 @@ impl AuthorizationEngine for PgAclEngine {
         rows.into_iter().map(Self::row_to_grant).collect()
     }
 
+    async fn list_outgoing_resources_paged(
+        &self,
+        granted_by: Uuid,
+        limit: u32,
+        cursor: Option<GrantCursor>,
+        sort_by: &str,
+        reverse: bool,
+    ) -> Result<(Vec<OutgoingResourceSummary>, Option<GrantCursor>), DomainError> {
+        let fetch_limit = (limit as i64) + 1;
+
+        // Row shape — one row per (resource, subject, permission).
+        // Columns:
+        //   0  resource_type   String
+        //   1  resource_id     Uuid
+        //   2  first_shared_at DateTime<Utc>   — MIN(granted_at) across resource
+        //   3  subject_type    String
+        //   4  subject_id      Uuid
+        //   5  subject_display String          — username or share item_name
+        //   6  grant_id        Uuid
+        //   7  granted_at      DateTime<Utc>   — this (subject, perm) row
+        //   8  expires_at      Option<DateTime<Utc>>
+        //   9  permission      String
+        //  10  sort_str        Option<String>
+        //  11  sort_int        Option<i64>
+        //  12  has_password    bool            — token: shares.password_hash IS NOT NULL
+        type Row = (
+            String,
+            Uuid,
+            chrono::DateTime<chrono::Utc>,
+            String,
+            Uuid,
+            String,
+            Uuid,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            String,
+            Option<String>,
+            Option<i64>,
+            bool,
+        );
+
+        let cursor_str = cursor.as_ref().and_then(|c| c.resource_name.clone());
+        let cursor_int = cursor.as_ref().and_then(|c| c.sort_int);
+        let cursor_at = cursor.as_ref().map(|c| c.granted_at);
+        let cursor_id = cursor.as_ref().map(|c| c.resource_id);
+
+        // ── Resource-page CTE (one row per resource, cursor-paginated) ─────────
+        // We page on resources (by first_shared_at + resource_id) so that the
+        // limit/cursor semantics are consistent with the incoming endpoint.
+        // All grants for each paged resource are then retrieved in the same query.
+        //
+        // $1 = granted_by
+        // $2 = cursor_str   (resource_name for name/type, owner_name for granted_by)
+        // $3 = cursor_int   (category_order for type, size for size)
+        // $4 = cursor_at    (first_shared_at)
+        // $5 = cursor_id    (resource_id)
+        // $6 = fetch_limit
+        let sql = match sort_by {
+            "name" | "type" => {
+                let sort_int_expr = if sort_by == "type" {
+                    "CASE WHEN ag.resource_type = 'folder' THEN 0 ELSE fi.category_order::bigint END"
+                } else {
+                    "NULL::bigint"
+                };
+                let (page_where, page_order) = if sort_by == "type" {
+                    if reverse {
+                        (
+                            r#"(  $3::integer IS NULL
+                               OR sort_int < $3
+                               OR (sort_int = $3 AND LOWER(sort_str) < $2)
+                               OR (sort_int = $3 AND LOWER(sort_str) = $2 AND resource_id < $5::uuid))"#,
+                            "sort_int DESC, LOWER(sort_str) DESC, resource_id DESC",
+                        )
+                    } else {
+                        (
+                            r#"(  $3::integer IS NULL
+                               OR sort_int > $3
+                               OR (sort_int = $3 AND LOWER(sort_str) > $2)
+                               OR (sort_int = $3 AND LOWER(sort_str) = $2 AND resource_id > $5::uuid))"#,
+                            "sort_int ASC, LOWER(sort_str) ASC, resource_id ASC",
+                        )
+                    }
+                } else if reverse {
+                    (
+                        r#"(  $2::text IS NULL
+                           OR LOWER(sort_str) < $2
+                           OR (LOWER(sort_str) = $2 AND resource_id < $5::uuid))"#,
+                        "LOWER(sort_str) DESC, resource_id DESC",
+                    )
+                } else {
+                    (
+                        r#"(  $2::text IS NULL
+                           OR LOWER(sort_str) > $2
+                           OR (LOWER(sort_str) = $2 AND resource_id > $5::uuid))"#,
+                        "LOWER(sort_str) ASC, resource_id ASC",
+                    )
+                };
+                format!(
+                    r#"WITH resource_page AS (
+                        SELECT ag.resource_type, ag.resource_id, MIN(ag.granted_at) AS first_shared_at,
+                               COALESCE(
+                                   CASE WHEN ag.resource_type = 'folder' THEN f.name  END,
+                                   CASE WHEN ag.resource_type = 'file'   THEN fi.name END
+                               ) AS sort_str,
+                               {sort_int_expr} AS sort_int
+                        FROM storage.access_grants ag
+                        LEFT JOIN storage.folders f  ON f.id  = ag.resource_id AND ag.resource_type = 'folder'
+                        LEFT JOIN storage.files   fi ON fi.id = ag.resource_id AND ag.resource_type = 'file'
+                        WHERE ag.granted_by = $1
+                        GROUP BY ag.resource_type, ag.resource_id, f.name, fi.name, fi.category_order
+                    ),
+                    rp AS (
+                        SELECT * FROM resource_page
+                        WHERE {page_where}
+                        ORDER BY {page_order}
+                        LIMIT $6
+                    )
+                    SELECT ag.resource_type, ag.resource_id, rp.first_shared_at,
+                           ag.subject_type, ag.subject_id,
+                           COALESCE(u.username, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
+                           ag.id AS grant_id, ag.granted_at, ag.expires_at, ag.permission,
+                           rp.sort_str, rp.sort_int,
+                           (sh.password_hash IS NOT NULL) AS has_password
+                    FROM rp
+                    JOIN storage.access_grants ag
+                      ON ag.resource_type = rp.resource_type AND ag.resource_id = rp.resource_id
+                     AND ag.granted_by = $1
+                    LEFT JOIN auth.users u   ON ag.subject_type = 'user'  AND u.id   = ag.subject_id
+                    LEFT JOIN storage.shares sh  ON ag.subject_type = 'token' AND sh.id  = ag.subject_id
+                    LEFT JOIN storage.files fi   ON ag.subject_type = 'token' AND ag.resource_type = 'file'   AND fi.id  = ag.resource_id
+                    LEFT JOIN storage.folders fld ON ag.subject_type = 'token' AND ag.resource_type = 'folder' AND fld.id = ag.resource_id
+                    ORDER BY {page_order}, ag.subject_id, ag.granted_at"#
+                )
+            }
+            "subject" => {
+                // Page on (subject_type_order, subject_display, resource_id) triples so
+                // every swimlane is always contiguous across cursor pages.
+                //
+                // subject_type_order: 0 = user, 1 = token without password, 2 = token with password
+                //
+                // Cursor encodes: sort_int = subject_type_order, resource_name = LOWER(subject_display),
+                // resource_id = last resource_id.
+                let (page_where, page_order) = if reverse {
+                    (
+                        r#"(  $3::bigint IS NULL
+                          OR sort_int < $3
+                          OR (sort_int = $3 AND LOWER(subject_display) < $2)
+                          OR (sort_int = $3 AND LOWER(subject_display) = $2 AND resource_id < $5::uuid))"#,
+                        "sort_int DESC, LOWER(subject_display) DESC, resource_id DESC",
+                    )
+                } else {
+                    (
+                        r#"(  $3::bigint IS NULL
+                          OR sort_int > $3
+                          OR (sort_int = $3 AND LOWER(subject_display) > $2)
+                          OR (sort_int = $3 AND LOWER(subject_display) = $2 AND resource_id > $5::uuid))"#,
+                        "sort_int ASC, LOWER(subject_display) ASC, resource_id ASC",
+                    )
+                };
+                format!(
+                    r#"WITH pairs AS (
+                        SELECT
+                            ag.resource_type,
+                            ag.resource_id,
+                            ag.subject_type,
+                            ag.subject_id,
+                            MAX(COALESCE(u.username, sh.item_name, ag.subject_id::text)) AS subject_display,
+                            BOOL_OR(sh.password_hash IS NOT NULL) AS has_password,
+                            MAX(CASE
+                                WHEN ag.subject_type = 'user' THEN 0
+                                WHEN ag.subject_type = 'token' AND sh.password_hash IS NULL THEN 1
+                                ELSE 2
+                            END)::bigint AS sort_int,
+                            MIN(ag.granted_at) AS first_granted_at
+                        FROM storage.access_grants ag
+                        LEFT JOIN auth.users u
+                               ON ag.subject_type = 'user' AND u.id = ag.subject_id
+                        LEFT JOIN storage.shares sh
+                               ON ag.subject_type = 'token' AND sh.id = ag.subject_id
+                        LEFT JOIN storage.files fi
+                               ON ag.subject_type = 'token' AND ag.resource_type = 'file' AND fi.id = ag.resource_id
+                        LEFT JOIN storage.folders fld
+                               ON ag.subject_type = 'token' AND ag.resource_type = 'folder' AND fld.id = ag.resource_id
+                        WHERE ag.granted_by = $1
+                          AND (ag.expires_at IS NULL OR ag.expires_at > NOW())
+                        GROUP BY ag.resource_type, ag.resource_id, ag.subject_type, ag.subject_id
+                    ),
+                    rp AS (
+                        SELECT * FROM pairs
+                        WHERE {page_where}
+                        ORDER BY {page_order}
+                        LIMIT $6
+                    )
+                    SELECT
+                        ag.resource_type,
+                        ag.resource_id,
+                        rp.first_granted_at    AS first_shared_at,
+                        ag.subject_type,
+                        ag.subject_id,
+                        rp.subject_display,
+                        ag.id                  AS grant_id,
+                        ag.granted_at,
+                        ag.expires_at,
+                        ag.permission,
+                        LOWER(rp.subject_display) AS sort_str,
+                        rp.sort_int,
+                        rp.has_password
+                    FROM rp
+                    JOIN storage.access_grants ag
+                      ON ag.resource_type = rp.resource_type
+                     AND ag.resource_id   = rp.resource_id
+                     AND ag.subject_type  = rp.subject_type
+                     AND ag.subject_id    = rp.subject_id
+                     AND ag.granted_by    = $1
+                     AND (ag.expires_at IS NULL OR ag.expires_at > NOW())
+                    ORDER BY {page_order}"#
+                )
+            }
+            "role" => {
+                // Page on (role_order, subject_display, resource_id) triples so that all
+                // of one person's grants within a role are contiguous — enabling aggregation
+                // ("Bob on Folder A, Folder B") to work correctly across cursor pages.
+                // role_order: 0 = admin (has delete+share), 1 = editor (has create or update), 2 = viewer
+                // Cursor: sort_int=role_order, resource_name=LOWER(subject_display), resource_id
+                let (page_where, page_order) = if reverse {
+                    (
+                        r#"(  $3::bigint IS NULL
+                          OR sort_int < $3
+                          OR (sort_int = $3 AND LOWER(subject_display) < $2)
+                          OR (sort_int = $3 AND LOWER(subject_display) = $2 AND resource_id < $5::uuid))"#,
+                        "sort_int DESC, LOWER(subject_display) DESC, resource_id DESC",
+                    )
+                } else {
+                    (
+                        r#"(  $3::bigint IS NULL
+                          OR sort_int > $3
+                          OR (sort_int = $3 AND LOWER(subject_display) > $2)
+                          OR (sort_int = $3 AND LOWER(subject_display) = $2 AND resource_id > $5::uuid))"#,
+                        "sort_int ASC, LOWER(subject_display) ASC, resource_id ASC",
+                    )
+                };
+                format!(
+                    r#"WITH pairs AS (
+                        SELECT
+                            ag.resource_type,
+                            ag.resource_id,
+                            ag.subject_type,
+                            ag.subject_id,
+                            MAX(COALESCE(u.username, sh.item_name, ag.subject_id::text)) AS subject_display,
+                            BOOL_OR(sh.password_hash IS NOT NULL) AS has_password,
+                            CASE
+                                WHEN BOOL_OR(ag.permission = 'delete')
+                                 AND BOOL_OR(ag.permission = 'share')  THEN 0
+                                WHEN BOOL_OR(ag.permission = 'create')
+                                  OR BOOL_OR(ag.permission = 'update') THEN 1
+                                ELSE 2
+                            END::bigint AS sort_int,
+                            MIN(ag.granted_at) AS first_granted_at
+                        FROM storage.access_grants ag
+                        LEFT JOIN auth.users u
+                               ON ag.subject_type = 'user' AND u.id = ag.subject_id
+                        LEFT JOIN storage.shares sh
+                               ON ag.subject_type = 'token' AND sh.id = ag.subject_id
+                        LEFT JOIN storage.files fi
+                               ON ag.subject_type = 'token' AND ag.resource_type = 'file' AND fi.id = ag.resource_id
+                        LEFT JOIN storage.folders fld
+                               ON ag.subject_type = 'token' AND ag.resource_type = 'folder' AND fld.id = ag.resource_id
+                        WHERE ag.granted_by = $1
+                          AND (ag.expires_at IS NULL OR ag.expires_at > NOW())
+                        GROUP BY ag.resource_type, ag.resource_id, ag.subject_type, ag.subject_id
+                    ),
+                    rp AS (
+                        SELECT * FROM pairs
+                        WHERE {page_where}
+                        ORDER BY {page_order}
+                        LIMIT $6
+                    )
+                    SELECT
+                        ag.resource_type,
+                        ag.resource_id,
+                        rp.first_granted_at    AS first_shared_at,
+                        ag.subject_type,
+                        ag.subject_id,
+                        rp.subject_display,
+                        ag.id                  AS grant_id,
+                        ag.granted_at,
+                        ag.expires_at,
+                        ag.permission,
+                        LOWER(rp.subject_display) AS sort_str,
+                        rp.sort_int,
+                        rp.has_password
+                    FROM rp
+                    JOIN storage.access_grants ag
+                      ON ag.resource_type = rp.resource_type
+                     AND ag.resource_id   = rp.resource_id
+                     AND ag.subject_type  = rp.subject_type
+                     AND ag.subject_id    = rp.subject_id
+                     AND ag.granted_by    = $1
+                     AND (ag.expires_at IS NULL OR ag.expires_at > NOW())
+                    ORDER BY {page_order}"#
+                )
+            }
+            _ => {
+                // Default: sort by first_shared_at DESC (newest resource shared first).
+                let (page_where, page_order) = if reverse {
+                    (
+                        r#"(  $4::timestamptz IS NULL
+                          OR first_shared_at > $4
+                          OR (first_shared_at = $4 AND resource_id > $5::uuid))"#,
+                        "first_shared_at ASC, resource_id ASC",
+                    )
+                } else {
+                    (
+                        r#"(  $4::timestamptz IS NULL
+                          OR first_shared_at < $4
+                          OR (first_shared_at = $4 AND resource_id < $5::uuid))"#,
+                        "first_shared_at DESC, resource_id DESC",
+                    )
+                };
+                format!(
+                    r#"WITH resource_page AS (
+                        SELECT resource_type, resource_id, MIN(granted_at) AS first_shared_at,
+                               NULL::text   AS sort_str,
+                               NULL::bigint AS sort_int
+                        FROM storage.access_grants
+                        WHERE granted_by = $1
+                        GROUP BY resource_type, resource_id
+                    ),
+                    rp AS (
+                        SELECT * FROM resource_page
+                        WHERE {page_where}
+                        ORDER BY {page_order}
+                        LIMIT $6
+                    )
+                    SELECT ag.resource_type, ag.resource_id, rp.first_shared_at,
+                           ag.subject_type, ag.subject_id,
+                           COALESCE(u.username, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
+                           ag.id AS grant_id, ag.granted_at, ag.expires_at, ag.permission,
+                           NULL::text AS sort_str, NULL::bigint AS sort_int,
+                           (sh.password_hash IS NOT NULL) AS has_password
+                    FROM rp
+                    JOIN storage.access_grants ag
+                      ON ag.resource_type = rp.resource_type AND ag.resource_id = rp.resource_id
+                     AND ag.granted_by = $1
+                    LEFT JOIN auth.users u    ON ag.subject_type = 'user'  AND u.id  = ag.subject_id
+                    LEFT JOIN storage.shares sh   ON ag.subject_type = 'token' AND sh.id  = ag.subject_id
+                    LEFT JOIN storage.files fi    ON ag.subject_type = 'token' AND ag.resource_type = 'file'   AND fi.id  = ag.resource_id
+                    LEFT JOIN storage.folders fld ON ag.subject_type = 'token' AND ag.resource_type = 'folder' AND fld.id = ag.resource_id
+                    ORDER BY {page_order}, ag.subject_id, ag.granted_at"#
+                )
+            }
+        };
+
+        let rows: Vec<Row> = sqlx::query_as::<_, Row>(&sql)
+            .bind(granted_by) // $1
+            .bind(&cursor_str) // $2 sort_str cursor
+            .bind(cursor_int) // $3 sort_int cursor
+            .bind(cursor_at) // $4 first_shared_at cursor
+            .bind(cursor_id) // $5 resource_id cursor
+            .bind(fetch_limit) // $6
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error(
+                    "PgAcl",
+                    format!("list_outgoing_resources_paged ({sort_by}): {e}"),
+                )
+            })?;
+
+        // ── Subject / Role sorts: page on (resource_id, subject_id) pairs ───────
+        // Each pair becomes one OutgoingResourceSummary with exactly one grant,
+        // preserving the SQL-ordered swimlane sequence across cursor pages.
+        if matches!(sort_by, "subject" | "role") {
+            let mut seen_pairs: Vec<(Uuid, Uuid)> = Vec::new();
+            let mut seen_pair_set: std::collections::HashSet<(Uuid, Uuid)> =
+                std::collections::HashSet::new();
+            for r in &rows {
+                if seen_pair_set.insert((r.1, r.4)) {
+                    seen_pairs.push((r.1, r.4));
+                }
+            }
+            let has_next = seen_pairs.len() > limit as usize;
+            seen_pairs.truncate(limit as usize);
+            let keep: std::collections::HashSet<(Uuid, Uuid)> =
+                seen_pairs.iter().copied().collect();
+
+            let last_row = rows.iter().rfind(|r| keep.contains(&(r.1, r.4)));
+            let next_cursor = if has_next {
+                last_row.map(|r| {
+                    let resource_name = r.10.clone(); // LOWER(subject_display) for both subject and role sort
+                    GrantCursor {
+                        sort_by: sort_by.to_owned(),
+                        granted_at: r.2,
+                        resource_id: r.1,
+                        resource_name,
+                        sort_int: r.11,
+                        reverse,
+                    }
+                })
+            } else {
+                None
+            };
+
+            // Group rows: (resource_id, subject_id) → OutgoingGrantEntry.
+            let mut entry_map: std::collections::HashMap<
+                (Uuid, Uuid),
+                (ResourceKind, OutgoingGrantEntry),
+            > = std::collections::HashMap::new();
+            for r in rows.into_iter().filter(|r| keep.contains(&(r.1, r.4))) {
+                let (
+                    rt_str,
+                    resource_id,
+                    _first_shared_at,
+                    subj_type,
+                    subj_id,
+                    subj_display,
+                    grant_id,
+                    granted_at,
+                    expires_at,
+                    perm_str,
+                    _,
+                    _,
+                    has_password,
+                ) = r;
+                let Some(resource_type) = ResourceKind::parse(&rt_str) else {
+                    continue;
+                };
+                let Some(perm) = Permission::parse(&perm_str) else {
+                    continue;
+                };
+                let key = (resource_id, subj_id);
+                let (_, entry) = entry_map.entry(key).or_insert_with(|| {
+                    (
+                        resource_type,
+                        OutgoingGrantEntry {
+                            grant_id,
+                            subject_type: subj_type.clone(),
+                            subject_id: subj_id,
+                            subject_display: subj_display.clone(),
+                            permissions: Vec::new(),
+                            granted_at,
+                            expires_at,
+                            has_password,
+                        },
+                    )
+                });
+                if !entry.permissions.contains(&perm) {
+                    entry.permissions.push(perm);
+                }
+            }
+
+            let summaries: Vec<OutgoingResourceSummary> = seen_pairs
+                .into_iter()
+                .filter_map(|(rid, sid)| {
+                    let (resource_type, grant) = entry_map.remove(&(rid, sid))?;
+                    Some(OutgoingResourceSummary {
+                        resource_type,
+                        resource_id: rid,
+                        first_shared_at: grant.granted_at,
+                        grants: vec![grant],
+                    })
+                })
+                .collect();
+
+            return Ok((summaries, next_cursor));
+        }
+
+        // ── All other sorts: page on distinct resource_ids ────────────────────
+        let mut seen_resources: Vec<Uuid> = Vec::new();
+        let mut seen_set: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        for r in &rows {
+            if seen_set.insert(r.1) {
+                seen_resources.push(r.1);
+            }
+        }
+
+        let has_next = seen_resources.len() > limit as usize;
+        seen_resources.truncate(limit as usize);
+        let keep: std::collections::HashSet<Uuid> = seen_resources.iter().copied().collect();
+
+        let last_row = rows.iter().rfind(|r| keep.contains(&r.1));
+        let next_cursor = if has_next {
+            last_row.map(|r| {
+                let sort_str_lc = r.10.as_deref().map(str::to_lowercase);
+                match sort_by {
+                    "name" => GrantCursor {
+                        sort_by: "name".to_owned(),
+                        granted_at: r.2,
+                        resource_id: r.1,
+                        resource_name: sort_str_lc,
+                        sort_int: None,
+                        reverse,
+                    },
+                    "type" => GrantCursor {
+                        sort_by: "type".to_owned(),
+                        granted_at: r.2,
+                        resource_id: r.1,
+                        resource_name: sort_str_lc,
+                        sort_int: r.11,
+                        reverse,
+                    },
+                    _ => GrantCursor {
+                        sort_by: "first_shared_at".to_owned(),
+                        granted_at: r.2,
+                        resource_id: r.1,
+                        resource_name: None,
+                        sort_int: None,
+                        reverse,
+                    },
+                }
+            })
+        } else {
+            None
+        };
+
+        // Group flat rows by resource_id → (ResourceKind, first_shared_at, subjects).
+        type ResourceEntry = (
+            ResourceKind,
+            chrono::DateTime<chrono::Utc>,
+            std::collections::HashMap<Uuid, OutgoingGrantEntry>,
+        );
+        let mut resource_map: std::collections::HashMap<Uuid, ResourceEntry> =
+            std::collections::HashMap::new();
+
+        for r in rows.into_iter().filter(|r| keep.contains(&r.1)) {
+            let (
+                rt_str,
+                resource_id,
+                first_shared_at,
+                subj_type,
+                subj_id,
+                subj_display,
+                grant_id,
+                granted_at,
+                expires_at,
+                perm_str,
+                _,
+                _,
+                has_password,
+            ) = r;
+            let Some(resource_type) = ResourceKind::parse(&rt_str) else {
+                continue;
+            };
+            let Some(perm) = Permission::parse(&perm_str) else {
+                continue;
+            };
+
+            let (_, _, subj_map) = resource_map.entry(resource_id).or_insert_with(|| {
+                (
+                    resource_type,
+                    first_shared_at,
+                    std::collections::HashMap::new(),
+                )
+            });
+            let entry = subj_map
+                .entry(subj_id)
+                .or_insert_with(|| OutgoingGrantEntry {
+                    grant_id,
+                    subject_type: subj_type.clone(),
+                    subject_id: subj_id,
+                    subject_display: subj_display.clone(),
+                    permissions: Vec::new(),
+                    granted_at,
+                    expires_at,
+                    has_password,
+                });
+            if !entry.permissions.contains(&perm) {
+                entry.permissions.push(perm);
+            }
+        }
+
+        let summaries: Vec<OutgoingResourceSummary> = seen_resources
+            .into_iter()
+            .filter_map(|rid| {
+                let (resource_type, first_shared_at, subj_map) = resource_map.remove(&rid)?;
+                let mut grants: Vec<OutgoingGrantEntry> = subj_map.into_values().collect();
+                let role_rank = |perms: &[Permission]| -> u8 {
+                    if perms.contains(&Permission::Delete) && perms.contains(&Permission::Share) {
+                        0 // admin → Can manage
+                    } else if perms.contains(&Permission::Create)
+                        || perms.contains(&Permission::Update)
+                    {
+                        1 // editor → Can edit
+                    } else {
+                        2 // viewer → Can view
+                    }
+                };
+                grants.sort_by(|a, b| {
+                    role_rank(&a.permissions)
+                        .cmp(&role_rank(&b.permissions))
+                        .then_with(|| {
+                            // users before tokens
+                            let type_rank = |st: &str| if st == "user" { 0u8 } else { 1 };
+                            type_rank(&a.subject_type).cmp(&type_rank(&b.subject_type))
+                        })
+                        .then_with(|| {
+                            a.subject_display
+                                .to_lowercase()
+                                .cmp(&b.subject_display.to_lowercase())
+                        })
+                });
+                Some(OutgoingResourceSummary {
+                    resource_type,
+                    resource_id: rid,
+                    first_shared_at,
+                    grants,
+                })
+            })
+            .collect();
+
+        Ok((summaries, next_cursor))
+    }
+
     async fn list_outgoing_grants(&self, granted_by: Uuid) -> Result<Vec<Grant>, DomainError> {
         let rows = sqlx::query_as::<
             _,
@@ -776,7 +1390,9 @@ impl AuthorizationEngine for PgAclEngine {
         .bind(resource.id())
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| DomainError::internal_error("PgAcl", format!("set_expiry_on_resource: {e}")))?;
+        .map_err(|e| {
+            DomainError::internal_error("PgAcl", format!("set_expiry_on_resource: {e}"))
+        })?;
         Ok(())
     }
 
