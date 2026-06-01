@@ -28,7 +28,7 @@ use lettre::transport::smtp::AsyncSmtpTransport;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncTransport, Message, Tokio1Executor};
 
-use crate::application::ports::email_sender::{EmailMessage, EmailSender};
+use crate::application::ports::email_sender::{EmailMessage, EmailSendOutcome, EmailSender};
 use crate::common::config::{SmtpConfig, SmtpTlsMode};
 use crate::common::errors::DomainError;
 
@@ -92,7 +92,7 @@ impl SmtpEmailSender {
 
 #[async_trait]
 impl EmailSender for SmtpEmailSender {
-    async fn send(&self, message: EmailMessage) -> Result<(), DomainError> {
+    async fn send(&self, message: EmailMessage) -> Result<EmailSendOutcome, DomainError> {
         let to: Mailbox = message.to.parse().map_err(|e| {
             DomainError::new(
                 crate::common::errors::ErrorKind::InvalidInput,
@@ -132,11 +132,23 @@ impl EmailSender for SmtpEmailSender {
             DomainError::internal_error("SmtpEmailSender", format!("build message: {}", e))
         })?;
 
-        self.transport
-            .send(built)
-            .await
-            .map_err(|e| DomainError::internal_error("SmtpEmailSender", format!("send: {}", e)))?;
+        let response =
+            self.transport.send(built).await.map_err(|e| {
+                DomainError::internal_error("SmtpEmailSender", format!("send: {}", e))
+            })?;
 
-        Ok(())
+        // Lettre's `Response::code()` returns a structured `Code`; its
+        // `Display` impl is the three-digit form ("250", "451", …).
+        let code: u16 = response.code().to_string().parse().unwrap_or(0);
+        // `message()` is `Iterator<Item = &String>`; take the first
+        // line (the rest are typically multi-line EHLO continuations,
+        // not interesting for a confirmation).
+        let message = response
+            .message()
+            .next()
+            .map(str::to_string)
+            .unwrap_or_default();
+
+        Ok(EmailSendOutcome { code, message })
     }
 }

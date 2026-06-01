@@ -8,9 +8,9 @@ use axum::{
 
 use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, ListUsersQueryDto,
-    MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto, StartMigrationDto,
-    TestOidcConnectionDto, TestStorageConnectionDto, UpdateUserActiveDto, UpdateUserQuotaDto,
-    UpdateUserRoleDto, VerifyMigrationDto,
+    MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto,
+    SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto, TestStorageConnectionDto,
+    UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto, VerifyMigrationDto,
 };
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
@@ -58,6 +58,9 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/settings/registration", put(set_registration_setting))
         // Audio metadata
         .route("/audio/metadata/reextract", post(reextract_audio_metadata))
+        // SMTP diagnostics
+        .route("/smtp/info", get(get_smtp_info))
+        .route("/smtp/test", post(send_smtp_test))
 }
 
 /// Validate JWT and require admin role. Returns (user_id, role).
@@ -1207,4 +1210,155 @@ async fn reextract_audio_metadata(
         "processed": result.processed,
         "failed": result.failed,
     })))
+}
+
+// ─────────────────────────────────────────────────────
+// SMTP diagnostics
+// ─────────────────────────────────────────────────────
+//
+// The SMTP backend is configured exclusively via OXICLOUD_SMTP_* env
+// vars (see docs/config/env.md). The admin UI uses these two endpoints
+// purely for diagnostics:
+//   - `get_smtp_info` shows the current runtime config (read-only — no
+//     write endpoint exists; operators edit `.env` and restart).
+//   - `send_smtp_test` sends a hardcoded confirmation mail to a
+//     recipient supplied by the admin, returning the SMTP server's
+//     response so the operator can correlate it with their relay logs.
+
+/// GET /api/admin/smtp/info — read-only view of the running SMTP config.
+#[utoipa::path(
+    get,
+    path = "/api/admin/smtp/info",
+    responses(
+        (status = 200, description = "Current SMTP settings", body = SmtpInfoDto),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+async fn get_smtp_info(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    admin_guard(&state, &headers).await?;
+
+    let smtp = &state.core.config.smtp;
+    let info = SmtpInfoDto {
+        enabled: smtp.is_enabled() && state.email_sender.is_some(),
+        host: smtp.host.clone(),
+        port: smtp.port,
+        tls: match smtp.tls {
+            crate::common::config::SmtpTlsMode::Starttls => "starttls".to_string(),
+            crate::common::config::SmtpTlsMode::Tls => "tls".to_string(),
+            crate::common::config::SmtpTlsMode::None => "none".to_string(),
+        },
+        from: smtp.from.clone(),
+        user_state: if smtp.user.is_empty() {
+            "<anon>"
+        } else {
+            "<set>"
+        },
+    };
+
+    Ok(Json(info))
+}
+
+/// POST /api/admin/smtp/test — send a diagnostic email to `dto.to`.
+///
+/// Returns 200 regardless of SMTP outcome; the body's `success` flag
+/// + `code`/`message` (or `error`) tell the frontend what to render.
+/// This keeps SMTP-level failures (4xx/5xx replies, connection
+/// timeouts) as ordinary diagnostic data rather than HTTP errors.
+#[utoipa::path(
+    post,
+    path = "/api/admin/smtp/test",
+    request_body = SendSmtpTestDto,
+    responses(
+        (status = 200, description = "Send attempt completed", body = SmtpTestResultDto),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 503, description = "SMTP not configured"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+async fn send_smtp_test(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(dto): Json<SendSmtpTestDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let (admin_id, _) = admin_guard(&state, &headers).await?;
+
+    let recipient = dto.to.trim().to_string();
+    if recipient.is_empty() {
+        return Err(AppError::bad_request("Recipient address is required"));
+    }
+
+    let sender = state.email_sender.as_ref().ok_or_else(|| {
+        AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "SMTP is not configured (set OXICLOUD_SMTP_HOST in .env to enable)",
+            "ServiceUnavailable",
+        )
+    })?;
+
+    let message = crate::application::ports::email_sender::EmailMessage {
+        to: recipient.clone(),
+        subject: "OxiCloud SMTP test".to_string(),
+        text_body: format!(
+            "This is a diagnostic message sent from your OxiCloud instance.\n\
+             \n\
+             If you are reading this, your SMTP relay accepted the message — \
+             outbound email is wired up correctly.\n\
+             \n\
+             Triggered by admin user id {} on {}.\n",
+            admin_id,
+            chrono::Utc::now().to_rfc3339(),
+        ),
+        html_body: None,
+    };
+
+    tracing::info!(
+        target: "audit",
+        event = "smtp.test_send",
+        admin_id = %admin_id,
+        recipient = %recipient,
+    );
+
+    let result = match sender.send(message).await {
+        Ok(outcome) => {
+            tracing::info!(
+                target: "audit",
+                event = "smtp.test_send_ok",
+                admin_id = %admin_id,
+                recipient = %recipient,
+                code = outcome.code,
+                message = %outcome.message,
+            );
+            SmtpTestResultDto {
+                success: true,
+                code: Some(outcome.code),
+                message: Some(outcome.message),
+                error: None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "audit",
+                event = "smtp.test_send_failed",
+                admin_id = %admin_id,
+                recipient = %recipient,
+                error = %e.message,
+            );
+            SmtpTestResultDto {
+                success: false,
+                code: None,
+                message: None,
+                error: Some(e.message),
+            }
+        }
+    };
+
+    Ok(Json(result))
 }

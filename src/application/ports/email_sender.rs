@@ -39,6 +39,22 @@ pub struct EmailMessage {
     pub html_body: Option<String>,
 }
 
+/// What the SMTP server said when it accepted the message. Surfaced
+/// through the trait so the admin "test email" endpoint can show the
+/// response to operators; the invitation flow generally ignores it but
+/// logs it via `tracing`.
+#[derive(Debug, Clone)]
+pub struct EmailSendOutcome {
+    /// SMTP status code from the final response (e.g. `250` for "OK").
+    /// Encoded as a `u16` because that's the natural range; lettre
+    /// returns it as a structured enum and we collapse it here.
+    pub code: u16,
+    /// First line of the server's reply (e.g. `"2.0.0 OK"`, or the
+    /// upstream provider's queue-id banner). Best-effort; if the
+    /// response was empty (unusual) this is the empty string.
+    pub message: String,
+}
+
 /// Port for sending transactional email.
 ///
 /// Implementations must:
@@ -54,10 +70,12 @@ pub struct EmailMessage {
 /// `dyn` patterns at the service boundary).
 #[async_trait]
 pub trait EmailSender: Send + Sync + 'static {
-    /// Send one message. Returns `Ok(())` only after the SMTP server has
-    /// accepted the message (i.e. after the final `.` or LMTP DATA close).
+    /// Send one message. Returns `Ok(outcome)` only after the SMTP server
+    /// has accepted the message (i.e. after the final `.` or LMTP DATA
+    /// close). The outcome carries the SMTP response code + first line
+    /// so diagnostic surfaces (admin "test email" page) can show it.
     /// Caller may run this fire-and-forget via `tokio::spawn` if response
     /// timing matters (e.g. magic-link invite path defending against
-    /// enumeration via latency).
-    async fn send(&self, message: EmailMessage) -> Result<(), DomainError>;
+    /// enumeration via latency); the outcome is then logged-only.
+    async fn send(&self, message: EmailMessage) -> Result<EmailSendOutcome, DomainError>;
 }
