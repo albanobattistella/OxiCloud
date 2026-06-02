@@ -6,15 +6,16 @@ This page is the canonical reference for the identity and authentication surface
 
 ## Identity model
 
-Every user row in `auth.users` carries one identity field and three independent credential slots.
+Every user row in `auth.users` carries one identity field, three independent credential slots, and one derived signal (`email_verified_at`).
 
 | Slot | Type | Required | Meaning |
 |---|---|---|---|
 | `email` | `String UNIQUE NOT NULL` | yes | The identity. Every login path ultimately resolves here. |
-| `username` | `String UNIQUE NULL` | no | Optional handle. 2-64 chars, `[A-Za-z0-9._-]+`, **no `@`**. Multiple NULLs coexist under the UNIQUE index. |
+| `username` | `String UNIQUE NULL` | no | Optional handle. 2-64 chars, `[A-Za-z0-9._-]+`, **no `@`**. **Claim-once, immutable** (PR 24) — a user can claim a handle once if they have none, but cannot rename or unclaim. Multiple NULLs coexist under the UNIQUE index. |
 | `password_hash` | `String NULL` | no | Argon2 hash if the user chose one. NULL = no password. No sentinel strings. |
 | `oidc_subject` | `String NULL` | no | IdP subject claim if the user linked an external identity. NULL = no OIDC. |
 | `is_external` | `bool` | yes (default false) | Provisioning origin marker. `true` = created via email-invitation. Affects home-folder provisioning and DAV access. |
+| `email_verified_at` | `Timestamp NULL` | no | PR 23 — when the user demonstrated control of their email. NULL = unverified. Stamped on first magic-link redemption OR OIDC JIT with verified claim. Idempotent: the first proof timestamp is preserved. No policy gates today; future PRs may gate features on this signal. |
 
 The **`@` ban on usernames** is what makes the username and email namespaces provably disjoint. The login dispatcher relies on this — input containing `@` is unambiguously an email lookup, input without is a username lookup. No fallback chain, single DB hit.
 
@@ -67,6 +68,41 @@ The frontend's "Username or email" field submits whatever the user typed; the JS
 
 **OIDC is excluded unconditionally** because the IdP is the security boundary and may enforce MFA (TOTP, WebAuthn, conditional access, etc.) that a magic-link would bypass. Even when the operator wants lenient magic-link for password users, OIDC-linked accounts must stay on the IdP path.
 
+## Device-bound magic-link redemption
+
+PR 22 binds **login-via-email** magic-links to the originating browser via a challenge cookie. The mechanism closes the mailbox-as-bearer-token attack class on this surface — mailbox compromise alone is no longer enough to redeem a session.
+
+**Asymmetric scope.** Binding applies only to login-via-email, not invitations:
+
+| Flow | Initiator | Bound to browser? | TTL | Env |
+|---|---|---|---|---|
+| `POST /api/auth/magic-link/send` (login-via-email) | The user themselves, in a browser | **Yes** (challenge cookie) | **10 minutes** | `OXICLOUD_MAGIC_LINK_LOGIN_TTL_MINUTES` |
+| `POST /api/grants subject.type=email` (invitation) | A sharer; recipient has no prior browser context | No (cross-device by design) | **24 hours** | `OXICLOUD_MAGIC_LINK_INVITE_TTL_HOURS` |
+
+The legacy `OXICLOUD_MAGIC_LINK_TTL_HOURS` env is preserved as a deprecated alias for the invitation TTL.
+
+**Cookie mechanism.** `POST /api/auth/magic-link/send` generates a random per-request challenge, sets it as `oxicloud_magic_request=<value>` (HttpOnly, SameSite=Strict, Path=`/magic`, Max-Age = login TTL), and mirrors it into the new `auth.magic_link_tokens.request_challenge` column. On redemption (`GET /magic/v1/{token}`):
+
+- **Cookie matches** → redeem instantly. The user clicked the link in the same browser they requested it from.
+- **Cookie absent or mismatched** → render a confirmation HTML page warning that the link was opened on a different device. The Continue button submits back to `/magic/v1/{token}?confirm=1`; the redemption proceeds with audit `magic_link.redeemed cross_browser_confirmed=true`.
+- **Invitation tokens** (no `request_challenge`) bypass the check entirely. Invitations are cross-device by design — the recipient was never going to have a matching cookie.
+
+The cookie is **set on every 200 response** from `POST /api/auth/magic-link/send`, including the silently-absorbed rate-limit and ineligibility paths. The DB row only stores the challenge when a token is actually minted, so the cookie's presence alone isn't an enumeration oracle.
+
+## Profile editing
+
+PR 24 adds `PATCH /api/auth/me/profile` for the user to edit their own profile. Three optional fields:
+
+| Field | Mutability |
+|---|---|
+| `username` | **Claim-once, immutable**. Accepted only when the caller has no username; subsequent calls (whether claiming a different handle or the same value) return `409 UsernameImmutable`. Admin override is the only escape hatch for genuine typos. |
+| `given_name` | Freely settable. Empty string is rejected — use field absence for "no change". |
+| `family_name` | Same as `given_name`. |
+
+**OIDC users are rejected wholesale with 403.** Their profile is owned by the IdP and changes there propagate on next sign-in.
+
+**Why claim-once on username?** The DAV / NextCloud compat layer at `/remote.php/dav/files/{user}/…` and the `verify_url_user` check both bake username in as a stable identifier in URL paths. Allowing renames would silently break every configured NC client (clients build URLs from the username they were given at login, and don't re-fetch a URL template). The immutability decision sidesteps the whole problem — usernames stay stable for the lifetime of the account, NC clients keep working forever. Native OxiCloud surfaces (`/api/*`, `/webdav/*`, `/caldav/*`) don't include username in the path and would have been fine with renames; the NC surface drives the policy.
+
 ## Registration paths
 
 | Path | Pre-condition | What happens |
@@ -100,7 +136,8 @@ In all four cases the real reason is recorded in the `audit` channel — operato
 | **Mailbox compromise = account compromise (lenient mode)** | When `OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS=true`, a user's mailbox is as strong as their password — flip the password by mail. Operator opt-in only; off by default. Aligns with modern SaaS norms (Slack, Notion, Substack). |
 | **Mailbox compromise = account compromise (strict mode)** | Only applies to magic-link-eligible users (no other credential). Their mailbox **is** their credential by design. Password-secured accounts are unaffected. |
 | **No native MFA** | Today OIDC delegation is the only path to MFA — the IdP (Keycloak, Authentik, Okta) enforces TOTP/WebAuthn/etc., OxiCloud sees only the resulting ID token. This is why OIDC users are unconditionally excluded from magic-link. Native TOTP / WebAuthn enrolment is a future feature. |
-| **Magic-link as bearer token** | A URL in an inbox is a bearer credential. PR 22 (planned) binds login-via-email tokens to the requesting browser via a challenge cookie. Invitations stay cross-device by necessity. |
+| **Magic-link as bearer token (login-via-email)** | Closed (PR 22). Login tokens carry a per-request challenge mirrored into the originating browser's `oxicloud_magic_request` cookie. Redemption from a different browser shows a confirmation page rather than auto-signing. Asymmetric TTL: login tokens expire in 10 min, invitations in 24 h. |
+| **Magic-link as bearer token (invitations)** | Open by design. Invitations have no `request_challenge` because the recipient has no prior browser context — Alice can't pre-authorise Bob's device. The shorter TTL on login tokens (10 min) does most of the work; invitations get the longer 24 h window because recipients may not check their email immediately. |
 | **Enumeration via timing** | Best-effort. `register` collision is the same code path as success (uniform response, similar latency); `magic-link/send` is bounded by per-target-email and per-IP rate limits. |
 
 ## Rate limits
@@ -121,14 +158,18 @@ The two `magic-link/send` caps are **silently absorbed** when exceeded (uniform 
 
 Every meaningful denial / suppression / outcome emits a structured event on the `audit` tracing target. Reason keys are stable — log aggregators key off them.
 
-| Event | Reasons (subset) | Where it fires |
+| Event | Reasons / fields (subset) | Where it fires |
 |---|---|---|
 | `auth.login` | `created` | success path, `register` service |
 | `auth.login_rejected` | `unknown_user`, `bad_password`, `account_deactivated` | `login` |
 | `auth.register` | `created`, `email_taken`, `username_taken` | `register` service |
 | `auth.magic_link_send` | `sent`, `no_account`, `oidc_user`, `has_password`, `account_deactivated`, `malformed_email`, `rate_limited_ip`, `rate_limited_email` | `send_login_link` + handler |
 | `magic_link.invitation_suppressed` | `oidc_user`, `has_password` | `issue_invitation` |
+| `magic_link.cross_browser_prompt` | `incoming_present` flag, token_id, user_id | `redeem` when the challenge cookie is absent or mismatched (PR 22) |
+| `magic_link.redeemed` | `cross_browser_confirmed` flag, `is_external`, resource fields | `redeem` success path |
 | `magic_link.redemption_rejected` | `token_not_found`, `token_used`, `token_expired`, `account_deactivated` | `redeem` |
+| `auth.profile_updated` | `fields` (list of changed names) | `update_profile_with_perms` (PR 24) |
+| `auth.profile_update_rejected` | `oidc_user`, `username_immutable`, `username_taken` | `update_profile_with_perms` (PR 24) |
 | `auth.app_password_create_rejected` | `external_user`, `no_username` | `create_app_password` |
 | `authz.external_user_blocked` | `internal_only_surface` | `require_internal_user_layer` (CalDAV/CardDAV/WebDAV) |
 | `auth.nc_basic_rejected` | `external_user` | `basic_auth_middleware` |
@@ -138,14 +179,20 @@ Every meaningful denial / suppression / outcome emits a structured event on the 
 
 ## Migration path for existing instances
 
-The auth model lands across PR 16-20. The schema migration in PR 16 is forward-only and non-destructive:
+The auth model lands across PR 16-24, all forward-only and non-destructive.
+
+**PR 16 — schema cleanup.**
 
 - `username` and `password_hash` drop their `NOT NULL` constraints; existing rows keep their values.
 - Email-shaped usernames on `is_external = true` users are NULL'd (they were redundant duplicates of the email column).
 - Sentinel password strings (`__EXTERNAL_NO_PASSWORD__`, `__OIDC_NO_PASSWORD__`) are replaced with `NULL`.
 - A CHECK constraint bans `@` in usernames going forward. Existing usernames are pre-validated as compliant.
 
-Existing internal users with `username` + `password_hash` continue to work unchanged. External users keep their session UUIDs; their JWTs reference `user_id`, not `username`, so session continuity is preserved. The address-book and share-modal use the `username → given_name family_name → email` fallback chain for display.
+**PR 22 — device-bound login tokens.** Adds `auth.magic_link_tokens.request_challenge TEXT NULL`. Invitation tokens already in flight keep NULL and continue to redeem cross-device. New login tokens get the challenge and the cookie binding.
+
+**PR 23 — email-verified signal.** Adds `auth.users.email_verified_at TIMESTAMPTZ NULL`. Backfill stamps OIDC users (`oidc_subject IS NOT NULL`) and externals who have logged in at least once (`is_external = TRUE AND last_login_at IS NOT NULL`) — for both groups, the proof-of-control event happened in the past. Everyone else stays NULL until they go through a magic-link flow.
+
+**Continuity guarantees.** Existing internal users with `username` + `password_hash` continue to work unchanged. External users keep their session UUIDs; their JWTs reference `user_id`, not `username`, so session continuity is preserved. The address-book and share-modal use the `username → given_name family_name → email` fallback chain for display. NextCloud clients keep working because (a) the URL path uses username, which is now immutable for the lifetime of the account, and (b) app passwords are tied to `user_id` and survive every other change to the user record.
 
 ## Future direction — per-user `login_strategy`
 
@@ -172,10 +219,11 @@ This stays out of the current PR sequence; the data model already accommodates i
 - **Session-kind discriminator.** A magic-link session is indistinguishable from a password session today. Scoped sessions (Option-B style: "magic-link sessions only access granted resources") are deferred.
 - **Differentiated session TTL for externals.** Refresh-token expiry is uniform today. Future env: `OXICLOUD_EXTERNAL_REFRESH_TOKEN_EXPIRY_DAYS`.
 - **Open Cloud Mesh (OCM) federation.** A third source for external provisioning. The `ExternalIdentityLifecycleHook::on_user_created` design accommodates the `source` discriminator (`magic_link` / `oidc` / `ocm`).
-- **Email-verified policy gates.** PR 23 (planned) introduces an `email_verified_at` column stamped on magic-link redemption + OIDC-with-verified-claim. Later policy PRs will let operators gate features (uploads, shares) on the signal.
-- **Device-bound login tokens.** PR 22 (planned) adds a challenge cookie so login-via-email magic-links only redeem on the originating browser, closing the mailbox-as-bearer-token attack class. Invitations stay cross-device.
+- **Email-verified policy gates.** PR 23 introduced the `email_verified_at` signal; gating features (uploads, shares, etc.) on it is future work — likely a single `OXICLOUD_REQUIRE_EMAIL_VERIFICATION=true` env var that adds middleware to the relevant routes.
+- **Username rename via the API.** PR 24 makes `username` claim-once-immutable on `/api/auth/me/profile`. A future admin endpoint at `PATCH /api/admin/users/{id}` can override for typo correction; that surface is admin-policy territory, not user-self-service.
 - **Anti-enumeration latency parity.** The success and collision branches of `register` already use similar code paths, but a sophisticated attacker could still time-distinguish. Deferred; rate-limiting bounds the damage.
 - **Per-user opt-out of magic-link.** The `OPEN_TO_PASSWORD_USERS` flag is instance-wide today. A future per-account toggle for high-privilege users (admins, etc.) would need a column + extra eligibility branch.
+- **Clearing `given_name` / `family_name`.** PR 24's profile endpoint can SET them but not CLEAR them back to NULL. A future patch with `Option<Option<String>>` serde semantics or a dedicated DELETE endpoint can add that.
 - **`login_strategy` enum** (above) — the data model accommodates it but the policy code is future work.
 
 ## Related documents
