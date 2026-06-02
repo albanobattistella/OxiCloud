@@ -1141,6 +1141,143 @@ impl AuthApplicationService {
         Ok(UserDto::from(user))
     }
 
+    /// Apply a profile update on behalf of the calling user (PR 24).
+    ///
+    /// Hard rules:
+    /// - **OIDC users are rejected outright (403)** — their profile
+    ///   fields are owned by the IdP. Mirroring writes here would
+    ///   create silent divergence.
+    /// - **Username is claim-once**: present in `dto` ↔ caller's
+    ///   current username must be `None`. Subsequent attempts are
+    ///   rejected with 409 `UsernameImmutable`. The immutability
+    ///   avoids DAV / NextCloud client breakage (paths include the
+    ///   username as a stable identifier).
+    /// - **Username uniqueness** is enforced on claim against other
+    ///   users (`get_user_by_username`).
+    /// - **Given / family names** are freely settable; passing an
+    ///   empty string is rejected (use no field for "no change").
+    ///
+    /// The method is idempotent on no-op DTOs (all fields absent) and
+    /// emits an `auth.profile_updated` audit line listing which fields
+    /// changed.
+    pub async fn update_profile_with_perms(
+        &self,
+        caller_id: Uuid,
+        dto: crate::application::dtos::user_dto::UpdateProfileDto,
+    ) -> Result<UserDto, DomainError> {
+        let mut user = self.user_storage.get_user_by_id(caller_id).await?;
+
+        if user.is_oidc_user() {
+            tracing::info!(
+                target: "audit",
+                event = "auth.profile_update_rejected",
+                reason = "oidc_user",
+                caller_id = %caller_id,
+                "👤 profile update rejected: caller is OIDC-managed",
+            );
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                "Your profile is managed by the identity provider and \
+                 cannot be edited here. Update it at the IdP — changes \
+                 will propagate on your next sign-in.",
+            ));
+        }
+
+        let mut changed: Vec<&'static str> = Vec::new();
+
+        // ── Username (claim-once) ──────────────────────────────
+        if let Some(ref candidate) = dto.username {
+            if user.username().is_some() {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.profile_update_rejected",
+                    reason = "username_immutable",
+                    caller_id = %caller_id,
+                    "👤 profile update rejected: username already claimed",
+                );
+                return Err(DomainError::new(
+                    ErrorKind::AlreadyExists,
+                    "User",
+                    "Username is already claimed and cannot be changed. \
+                     Contact an administrator if you need to rename.",
+                ));
+            }
+            // Uniqueness against other users.
+            if self
+                .user_storage
+                .get_user_by_username(candidate)
+                .await
+                .is_ok()
+            {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.profile_update_rejected",
+                    reason = "username_taken",
+                    caller_id = %caller_id,
+                    attempted_username = %candidate,
+                    "👤 profile update rejected: username '{}' is taken",
+                    candidate,
+                );
+                return Err(DomainError::new(
+                    ErrorKind::AlreadyExists,
+                    "User",
+                    format!("Username '{}' is already taken", candidate),
+                ));
+            }
+            user.set_username(candidate.clone()).map_err(|e| {
+                DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "User",
+                    format!("Invalid username: {}", e),
+                )
+            })?;
+            changed.push("username");
+        }
+
+        // ── Given / family names ───────────────────────────────
+        if let Some(ref g) = dto.given_name {
+            if g.trim().is_empty() {
+                return Err(DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "User",
+                    "given_name cannot be an empty string. Omit the field \
+                     to leave it unchanged.",
+                ));
+            }
+            user.set_given_name(Some(g.clone()));
+            changed.push("given_name");
+        }
+        if let Some(ref f) = dto.family_name {
+            if f.trim().is_empty() {
+                return Err(DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "User",
+                    "family_name cannot be an empty string. Omit the field \
+                     to leave it unchanged.",
+                ));
+            }
+            user.set_family_name(Some(f.clone()));
+            changed.push("family_name");
+        }
+
+        if changed.is_empty() {
+            // No-op — return the current user without a DB write.
+            return Ok(UserDto::from(user));
+        }
+
+        let updated = self.user_storage.update_user(user).await?;
+        tracing::info!(
+            target: "audit",
+            event = "auth.profile_updated",
+            caller_id = %caller_id,
+            fields = ?changed,
+            "👤 profile updated for {}",
+            caller_id,
+        );
+        Ok(UserDto::from(updated))
+    }
+
     // Alias for consistency with handler method
     pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
         self.get_user(user_id).await

@@ -147,6 +147,137 @@ pr18_user_id: jsonpath "$.id"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 6a — PR 24: empty PATCH body is a no-op, returns the
+#           current UserDto unchanged.
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{}
+
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{pr18_user_id}}"
+jsonpath "$.username" not exists
+jsonpath "$.given_name" not exists
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6b — PR 24: set given_name and family_name. Username
+#           stays unclaimed.
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{ "given_name": "Pee Are", "family_name": "Eighteen" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.given_name" == "Pee Are"
+jsonpath "$.family_name" == "Eighteen"
+jsonpath "$.username" not exists
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6c — PR 24: empty string given_name is rejected (use the
+#           field's ABSENCE for "no change"; null-clearing is
+#           out of scope for v1).
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{ "given_name": "" }
+
+HTTP 400
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6d — PR 24: attempting to claim a username taken by
+#           another user (admin) → 409 with `username_taken`
+#           audit reason.
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{ "username": "{{username}}" }
+
+HTTP 409
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6e — PR 24: claim a fresh handle. Username is None →
+#           Some, allowed.
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{ "username": "pr18handle" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.username" == "pr18handle"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6f — PR 24: claim-once enforcement. Username is already
+#           set; second PATCH with a different handle → 409
+#           UsernameImmutable. The NC client surface depends on
+#           usernames being stable; admin override is the only
+#           escape hatch (out of scope for this endpoint).
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{ "username": "different-handle" }
+
+HTTP 409
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6g — PR 24: PATCH with the SAME existing username — also
+#           409 immutable, since "no-op username" semantically
+#           differs from "no field" (the latter is the actual
+#           no-op).
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{ "username": "pr18handle" }
+
+HTTP 409
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6h — PR 24: invalid format (contains '@' — reserved for
+#           the email namespace) → 400.
+# ─────────────────────────────────────────────────────────────
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{pr18_access_token}}
+Content-Type: application/json
+{ "given_name": "Pr18@Handle" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.given_name" == "Pr18@Handle"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6i — PR 24: final state check. Username is pr18handle,
+#           given/family are set. PR 23 email_verified_at still
+#           present.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{pr18_access_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.username" == "pr18handle"
+jsonpath "$.given_name" == "Pr18@Handle"
+jsonpath "$.family_name" == "Eighteen"
+jsonpath "$.email_verified_at" exists
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 7 — The new user can request another magic-link (no
 #          password configured → eligible). Anti-enumeration
 #          200 either way.

@@ -37,9 +37,11 @@ pub fn auth_public_routes() -> Router<Arc<AppState>> {
 /// Protected auth routes — require authentication (auth + CSRF middleware
 /// must be applied by the caller in main.rs).
 pub fn auth_protected_routes() -> Router<Arc<AppState>> {
+    use axum::routing::patch;
     Router::new()
         .route("/me", get(get_current_user))
         .route("/me/image", put(update_user_image))
+        .route("/me/profile", patch(update_profile))
         .route("/change-password", put(change_password))
         .route("/logout", post(logout))
 }
@@ -519,6 +521,48 @@ pub async fn change_password(
         .await?;
 
     Ok(StatusCode::OK)
+}
+
+/// Update the caller's profile (PR 24).
+///
+/// Fields are individually optional — absent = no change. Username is
+/// **claim-once, immutable**: passing `username` when the caller
+/// already has one is rejected with 409 (the DAV / NextCloud path
+/// surface bakes username in as a stable identifier; renaming would
+/// break clients). Given / family name are freely settable.
+///
+/// OIDC-linked users are rejected wholesale with 403 — their profile
+/// is owned by the IdP.
+#[utoipa::path(
+    patch,
+    path = "/api/auth/me/profile",
+    request_body = crate::application::dtos::user_dto::UpdateProfileDto,
+    responses(
+        (status = 200, description = "Updated profile (UserDto)", body = UserDto),
+        (status = 400, description = "Validation error (e.g. invalid handle format, empty given_name)"),
+        (status = 401, description = "Not authenticated"),
+        (status = 403, description = "OIDC-managed profile — edit at the IdP"),
+        (status = 409, description = "Username already claimed (immutable) or taken by another user"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "auth"
+)]
+pub async fn update_profile(
+    State(state): State<Arc<AppState>>,
+    CurrentUserId(user_id): CurrentUserId,
+    Json(dto): Json<crate::application::dtos::user_dto::UpdateProfileDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let auth_service = state
+        .auth_service
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
+
+    let updated = auth_service
+        .auth_application_service
+        .update_profile_with_perms(user_id, dto)
+        .await?;
+
+    Ok((StatusCode::OK, Json(updated)))
 }
 
 // TODO: add utoipa

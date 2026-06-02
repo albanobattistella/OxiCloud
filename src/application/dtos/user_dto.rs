@@ -114,6 +114,49 @@ pub struct SetupAdminDto {
     pub password: String,
 }
 
+/// Partial-update body for `PATCH /api/auth/me/profile` (PR 24).
+///
+/// Each field is **optional**:
+/// - **absent** → no change to that field.
+/// - **present** → set / claim.
+///
+/// **Username is claim-once, immutable.** This endpoint accepts
+/// `username` only when the caller currently has none — passing it
+/// when one is already claimed is rejected with `409 UsernameImmutable`.
+/// The immutability avoids the NextCloud / DAV client breakage that
+/// would otherwise come from renaming (paths under
+/// `/remote.php/dav/files/{user}/…` and the `verify_url_user` check
+/// both bake the username in as a stable identifier). If a user really
+/// typoed their handle and needs to fix it, an admin override is the
+/// escape hatch.
+///
+/// **Given / family name** are freely settable. Any non-empty value
+/// replaces the current one. Clearing back to `None` is out of scope
+/// for v1.
+///
+/// **OIDC-linked users are rejected wholesale with 403** — their
+/// profile fields are managed at the IdP. The IdP is the source of
+/// truth; mirroring writes here would just create a divergence.
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema, Default)]
+pub struct UpdateProfileDto {
+    /// Handle to claim (2-64 chars, `[A-Za-z0-9._-]+`, no `@`).
+    /// Accepted only when the caller currently has no username. Once
+    /// claimed the handle is permanent for the lifetime of the
+    /// account; subsequent attempts to set or change it via this
+    /// endpoint are rejected with 409. Admin override (via the
+    /// admin-create-user / admin-update-user surface, future PR) is
+    /// the escape hatch for genuine typos.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// New first/given name. Any non-empty value sets/replaces the
+    /// current value. Absent → no change.
+    #[serde(default)]
+    pub given_name: Option<String>,
+    /// New last/family name. Same semantics as `given_name`.
+    #[serde(default)]
+    pub family_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuthResponseDto {
     pub user: UserDto,
