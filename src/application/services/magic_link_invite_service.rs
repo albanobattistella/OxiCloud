@@ -11,10 +11,13 @@
 //!      shared resource, build the `/magic/v1/{token}` URL, and send the
 //!      invitation email through the wired `EmailSender`.
 //!
-//! Step 2 is only called when the resolved user has no other login
-//! credential (`!user.has_login_credential()`) — internal users with
-//! passwords / OIDC see the grant appear in their normal
-//! "Shared with me" view and do not get a clickable magic link.
+//! Step 2 is gated by [`magic_link_eligibility`] — OIDC users are
+//! unconditionally rejected (audit `oidc_user`); password users are
+//! rejected by default (`has_password`) but allowed when
+//! `OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS=true`. Rejected
+//! invitations still result in the grant being created — the recipient
+//! sees the shared resource in their normal "Shared with me" view —
+//! only the courtesy notification mail is suppressed.
 //!
 //! # Enumeration defense
 //!
@@ -39,6 +42,49 @@ use crate::domain::repositories::user_repository::{UserRepository, UserRepositor
 use crate::domain::services::authorization::{Resource, ResourceKind};
 use crate::domain::services::email_normalize::normalize_email;
 use crate::infrastructure::repositories::pg::UserPgRepository;
+
+/// Eligibility decision for a user to receive a magic-link.
+///
+/// Returned by [`magic_link_eligibility`]. The `Reject` arm carries a
+/// **stable** audit-reason key (`"oidc_user"`, `"has_password"`,
+/// `"account_deactivated"`) — log aggregators key off this, do not
+/// repurpose existing values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Eligibility {
+    Allow,
+    Reject(&'static str),
+}
+
+/// Decide whether to mint a magic-link for the given user.
+///
+/// Precedence ladder (PR 19):
+///
+/// 1. **OIDC linked** → always reject with `"oidc_user"`. The IdP is the
+///    security boundary and may enforce MFA that magic-link would
+///    bypass. The `open_to_password_users` flag has **no effect**.
+/// 2. **Has a password configured** → reject with `"has_password"` by
+///    default. Allow when `open_to_password_users` is `true` (lenient
+///    mode — operator opt-in via env, accepting that mailbox compromise
+///    becomes equivalent to password compromise).
+/// 3. **No credential at all** (the typical external user or
+///    fresh email-only signup) → allow.
+///
+/// Account-deactivation is **not** checked here — `send_login_link` /
+/// `issue_invitation` handle it separately because the rejection reason
+/// (`"account_deactivated"`) is unrelated to credential state.
+pub fn magic_link_eligibility(user: &User, open_to_password_users: bool) -> Eligibility {
+    if user.is_oidc_user() {
+        return Eligibility::Reject("oidc_user");
+    }
+    if user.has_password() {
+        return if open_to_password_users {
+            Eligibility::Allow
+        } else {
+            Eligibility::Reject("has_password")
+        };
+    }
+    Eligibility::Allow
+}
 
 pub struct MagicLinkInviteService {
     user_storage: Arc<UserPgRepository>,
@@ -167,11 +213,25 @@ impl MagicLinkInviteService {
         resource: Resource,
     ) -> Result<(), DomainError> {
         // The grant is in place either way; only mint a magic link when
-        // the recipient has no other way to authenticate (the auto-auth
-        // mailbox-as-2FA-bypass is only acceptable when the recipient
-        // has nothing else). Internal users with passwords / OIDC
-        // simply see the grant in their normal "Shared with me" view.
-        if recipient.has_login_credential() {
+        // the recipient is magic-link-eligible. OIDC-linked users never
+        // get one (IdP is the security boundary); password users get
+        // one only when the operator opted into lenient mode via
+        // `OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS=true`. Either way
+        // they see the grant in their normal "Shared with me" view —
+        // the mail is purely a notification convenience.
+        if let Eligibility::Reject(reason) =
+            magic_link_eligibility(recipient, self.magic_link_cfg.open_to_password_users)
+        {
+            tracing::info!(
+                target: "audit",
+                event = "magic_link.invitation_suppressed",
+                reason = reason,
+                user_id = %recipient.id(),
+                username = %recipient.display_for_audit(),
+                "📭 invitation mail suppressed: '{}' is not magic-link-eligible ({})",
+                recipient.display_for_audit(),
+                reason,
+            );
             return Ok(());
         }
 
@@ -270,7 +330,7 @@ impl MagicLinkInviteService {
     /// that doesn't reveal whether the email maps to an account.
     ///
     /// Audit log distinguishes three real outcomes — `sent`,
-    /// `no_account`, `has_credential` — so operators can see the truth
+    /// `no_account`, `oidc_user`, `has_password` — so operators can see the truth
     /// while the API stays anti-enumeration-safe. A fourth outcome
     /// `send_failed` is logged at `warn` level when SMTP errors.
     pub async fn send_login_link(&self, raw_email: &str) -> Result<(), DomainError> {
@@ -306,20 +366,25 @@ impl MagicLinkInviteService {
             Err(e) => return Err(DomainError::from(e)),
         };
 
-        if user.has_login_credential() {
-            // Refuse the magic-link path for users with a password /
-            // OIDC — accepting it would let an attacker bypass those
-            // factors by merely owning the mailbox at the moment of
-            // request. They should sign in through the regular form.
+        if let Eligibility::Reject(reason) =
+            magic_link_eligibility(&user, self.magic_link_cfg.open_to_password_users)
+        {
+            // Refuse the magic-link path for users who have a stronger
+            // credential configured. OIDC is unconditional — the IdP is
+            // the security boundary and we must not bypass any MFA it
+            // enforces. Password is gated by `open_to_password_users`:
+            // strict mode refuses (default — magic-link would weaken the
+            // password to mailbox-strength); lenient mode allows.
             tracing::info!(
                 target: "audit",
                 event = "auth.magic_link_send",
-                reason = "has_credential",
+                reason = reason,
                 user_id = %user.id(),
                 username = %user.display_for_audit(),
                 email = %normalised,
-                "🔗 login-link suppressed: '{}' has another login credential",
+                "🔗 login-link suppressed: '{}' rejected ({})",
                 user.display_for_audit(),
+                reason,
             );
             return Ok(());
         }
@@ -414,5 +479,75 @@ impl From<ResourceKind> for MagicLinkResourceKind {
             ResourceKind::Folder => Self::Folder,
             ResourceKind::File => Self::File,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::user::{User, UserRole};
+
+    fn user(password: Option<&str>, oidc: Option<(&str, &str)>) -> User {
+        let (provider, subject) = match oidc {
+            Some((p, s)) => (Some(p.to_string()), Some(s.to_string())),
+            None => (None, None),
+        };
+        User::new(
+            "test@example.com".to_string(),
+            None,
+            password.map(str::to_string),
+            provider,
+            subject,
+            UserRole::User,
+            0,
+            true,
+        )
+        .expect("test user")
+    }
+
+    #[test]
+    fn oidc_always_rejected_regardless_of_flag() {
+        let u = user(None, Some(("google", "sub-123")));
+        assert_eq!(
+            magic_link_eligibility(&u, false),
+            Eligibility::Reject("oidc_user")
+        );
+        assert_eq!(
+            magic_link_eligibility(&u, true),
+            Eligibility::Reject("oidc_user")
+        );
+    }
+
+    #[test]
+    fn password_user_strict_then_lenient() {
+        let u = user(Some("$argon2id$..."), None);
+        assert_eq!(
+            magic_link_eligibility(&u, false),
+            Eligibility::Reject("has_password")
+        );
+        assert_eq!(magic_link_eligibility(&u, true), Eligibility::Allow);
+    }
+
+    #[test]
+    fn no_credential_always_allowed() {
+        let u = user(None, None);
+        assert_eq!(magic_link_eligibility(&u, false), Eligibility::Allow);
+        assert_eq!(magic_link_eligibility(&u, true), Eligibility::Allow);
+    }
+
+    #[test]
+    fn oidc_dominates_password_when_both_set() {
+        // Edge case: user has password AND OIDC linked. The ladder
+        // checks OIDC first, so the rejection reason is "oidc_user"
+        // (not "has_password"). The flag doesn't matter here either.
+        let u = user(Some("hash"), Some(("google", "sub-123")));
+        assert_eq!(
+            magic_link_eligibility(&u, false),
+            Eligibility::Reject("oidc_user")
+        );
+        assert_eq!(
+            magic_link_eligibility(&u, true),
+            Eligibility::Reject("oidc_user")
+        );
     }
 }

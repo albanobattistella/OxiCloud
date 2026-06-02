@@ -729,6 +729,23 @@ pub struct MagicLinkConfig {
     /// spreading low per-email volume across many target addresses.
     /// Default: 200/hour.
     pub send_per_ip_per_hour: u32,
+    /// Policy switch: whether magic-link is offered to users who
+    /// already have a password configured.
+    ///
+    /// - `false` (default, strict): users with a password get
+    ///   audit-logged `has_password` and no mail. Their password is
+    ///   the only authentication path; magic-link would weaken it to
+    ///   "mailbox compromise = account compromise".
+    /// - `true` (lenient): users with a password can also request a
+    ///   magic-link as a sign-in path. Aligns with modern SaaS UX
+    ///   (Slack, Notion, etc.) — operators who treat email as the
+    ///   canonical recovery channel anyway pick this.
+    ///
+    /// OIDC-linked users are **always** rejected from magic-link
+    /// regardless of this flag — the IdP is the security boundary and
+    /// may enforce MFA we shouldn't bypass. See
+    /// `magic_link_eligibility()` for the precedence ladder.
+    pub open_to_password_users: bool,
 }
 
 impl Default for MagicLinkConfig {
@@ -740,6 +757,7 @@ impl Default for MagicLinkConfig {
             invite_per_caller_per_hour: 50,
             send_per_email_per_hour: 5,
             send_per_ip_per_hour: 200,
+            open_to_password_users: false,
         }
     }
 }
@@ -1385,6 +1403,9 @@ impl AppConfig {
             && n > 0
         {
             config.magic_link.send_per_ip_per_hour = n;
+        }
+        if let Ok(v) = env::var("OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS") {
+            config.magic_link.open_to_password_users = v == "true" || v == "1";
         }
 
         config

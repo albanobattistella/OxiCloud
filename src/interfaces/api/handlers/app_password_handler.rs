@@ -26,7 +26,7 @@ pub fn app_password_routes() -> Router<Arc<AppState>> {
 /// Returns the plain-text password ONCE. The user must copy it immediately.
 ///
 /// External users are rejected with 403: app passwords are persistent
-/// credentials, and the magic-link-eligibility rule (`has_login_credential`)
+/// credentials, and the magic-link-eligibility rule (`magic_link_eligibility`)
 /// is built on the assumption that externals have NO other credential
 /// configured. Letting an external mint an app password would break that
 /// invariant — and the Basic-Auth surface (`/remote.php/*`, `/ocs/*`)
