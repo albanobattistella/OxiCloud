@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "이 로그인 링크는 더 이상 유효하지 않습니다",
+                "expired_body": "링크가 만료되었거나 이미 사용되었을 수 있습니다. 새 링크를 보내드릴 수 있습니다 — 몇 초 안에 받은편지함에 도착합니다.",
+                "resend_to": "{{email}}로 새 링크 보내기",
+                "generic_unavailable": "이 로그인 링크는 더 이상 유효하지 않습니다. 이미 사용되었거나 만료되었을 수 있습니다. 로그인 페이지에서 새 링크를 요청하세요.",
+                "service_unavailable": "이 서버에서는 매직 링크 로그인이 활성화되어 있지 않습니다.",
+                "internal_error": "로그인 중 오류가 발생했습니다. 다시 시도해 주세요.",
+                "resend_failure": "링크 전송 중 오류가 발생했습니다. 다시 시도해 주세요.",
+                "cross_browser_title": "이 기기에서 로그인을 계속하시겠습니까?",
+                "cross_browser_body": "요청한 곳과 다른 브라우저나 기기에서 이 로그인 링크를 열었습니다.",
+                "cross_browser_warning": "이 링크를 본인이 요청했다면 안전하게 계속할 수 있습니다. 그렇지 않다면 이 페이지를 닫으세요 — 계속을 클릭하면 다른 사람이 당신의 계정에 로그인하게 됩니다.",
+                "cross_browser_continue": "계속하고 로그인",
+                "resend_confirmation_title": "받은편지함을 확인하세요",
+                "resend_confirmation_body": "로그인 링크가 활성 계정의 것이었다면 새 링크가 방금 전송되었습니다. 받은편지함을 확인하세요.",
+                "return_link": "OxiCloud로 돌아가기"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "{{inviter}}님이 OxiCloud에서 {{kind}}을(를) 공유했습니다",
+                    "body": "{{inviter}}님이 OxiCloud에서 {{kind}}을(를) 공유했습니다.\n\n아래 링크를 클릭하여 여세요:\n{{link}}\n\n링크는 한 번만 사용 가능하며 {{ttl_hours}}시간 후에 만료됩니다.\n이 초대를 예상하지 못했다면 이 메시지를 무시하셔도 됩니다.\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "OxiCloud 로그인",
+                    "body": "안녕하세요,\n\n아래 링크를 사용하여 OxiCloud에 로그인하세요. 링크는 한 번만 사용 가능하며 {{ttl_minutes}}분 후에 만료됩니다. 요청한 것과 동일한 기기에서 여세요.\n\n{{link}}\n\n이 로그인 링크를 요청하지 않으셨다면 이 메시지를 무시하셔도 됩니다 — 추가 조치가 필요하지 않습니다.\n\n— OxiCloud"
                 },
-                "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_file": "파일",
+                "kind_folder": "폴더",
+                "english_fallback_divider": "--- 영어 버전은 아래 ---"
             }
         }
     },

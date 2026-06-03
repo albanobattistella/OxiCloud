@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "Questo link di accesso non è più valido",
+                "expired_body": "Il link potrebbe essere scaduto o già stato utilizzato. Possiamo inviartene uno nuovo — arriverà nella tua casella di posta in pochi secondi.",
+                "resend_to": "Invia un nuovo link a {{email}}",
+                "generic_unavailable": "Questo link di accesso non è più valido. Potrebbe essere già stato utilizzato o essere scaduto. Richiedi un nuovo link dalla pagina di accesso.",
+                "service_unavailable": "L'accesso tramite magic link non è abilitato su questo server.",
+                "internal_error": "Si è verificato un errore durante l'accesso. Riprova.",
+                "resend_failure": "Si è verificato un errore durante l'invio del link. Riprova.",
+                "cross_browser_title": "Continuare l'accesso su questo dispositivo?",
+                "cross_browser_body": "Hai aperto questo link di accesso in un browser o dispositivo diverso da quello in cui l'hai richiesto.",
+                "cross_browser_warning": "Se hai richiesto questo link, puoi continuare in sicurezza. In caso contrario, chiudi questa pagina — cliccare su Continua effettuerebbe l'accesso di qualcun altro al tuo account.",
+                "cross_browser_continue": "Continua e accedi",
+                "resend_confirmation_title": "Controlla la tua casella di posta",
+                "resend_confirmation_body": "Se il link di accesso apparteneva a un account attivo, è appena stato inviato un nuovo link. Controlla la tua casella di posta.",
+                "return_link": "Torna a OxiCloud"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "{{inviter}} ha condiviso un {{kind}} con te su OxiCloud",
+                    "body": "{{inviter}} ha condiviso un {{kind}} con te su OxiCloud.\n\nAprilo facendo clic sul link sottostante:\n{{link}}\n\nIl link è monouso e scade tra {{ttl_hours}} ore.\nSe non ti aspettavi questo invito, puoi ignorare questo messaggio.\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "Accedi a OxiCloud",
+                    "body": "Ciao,\n\nUsa il link sottostante per accedere a OxiCloud. Il link è monouso e scade tra {{ttl_minutes}} minuti. Aprilo sullo stesso dispositivo da cui l'hai richiesto.\n\n{{link}}\n\nSe non hai richiesto questo link di accesso, puoi ignorare questo messaggio — non è necessaria alcuna ulteriore azione.\n\n— OxiCloud"
                 },
                 "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_folder": "cartella",
+                "english_fallback_divider": "--- Versione inglese qui sotto ---"
             }
         }
     },

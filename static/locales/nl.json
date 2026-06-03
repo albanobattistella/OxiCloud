@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "Deze aanmeldlink is niet meer geldig",
+                "expired_body": "De link is mogelijk verlopen of al gebruikt. We kunnen je een nieuwe sturen — die komt binnen enkele seconden in je inbox.",
+                "resend_to": "Stuur een nieuwe link naar {{email}}",
+                "generic_unavailable": "Deze aanmeldlink is niet meer geldig. Hij is mogelijk al gebruikt of verlopen. Vraag een nieuwe link aan via de aanmeldpagina.",
+                "service_unavailable": "Aanmelden via magic link is niet ingeschakeld op deze server.",
+                "internal_error": "Er is iets misgegaan bij het aanmelden. Probeer het opnieuw.",
+                "resend_failure": "Er is iets misgegaan bij het versturen van de link. Probeer het opnieuw.",
+                "cross_browser_title": "Doorgaan met aanmelden op dit apparaat?",
+                "cross_browser_body": "Je hebt deze aanmeldlink geopend in een andere browser of op een ander apparaat dan waar je hem hebt aangevraagd.",
+                "cross_browser_warning": "Als jij deze link hebt aangevraagd, kun je veilig doorgaan. Zo niet, sluit deze pagina — op Doorgaan klikken zou iemand anders bij je account aanmelden.",
+                "cross_browser_continue": "Doorgaan en aanmelden",
+                "resend_confirmation_title": "Controleer je inbox",
+                "resend_confirmation_body": "Als de aanmeldlink bij een actief account hoorde, is er zojuist een nieuwe link verstuurd. Controleer je inbox.",
+                "return_link": "Terug naar OxiCloud"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud",
+                    "body": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud.\n\nOpen het door op de onderstaande link te klikken:\n{{link}}\n\nDe link werkt eenmalig en verloopt over {{ttl_hours}} uur.\nAls je deze uitnodiging niet verwacht, kun je dit bericht negeren.\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "Aanmelden bij OxiCloud",
+                    "body": "Hallo,\n\nGebruik de onderstaande link om je aan te melden bij OxiCloud. De link werkt eenmalig en verloopt over {{ttl_minutes}} minuten. Open hem op hetzelfde apparaat waarop je hem hebt aangevraagd.\n\n{{link}}\n\nAls je deze aanmeldlink niet hebt aangevraagd, kun je dit bericht negeren — er is geen verdere actie nodig.\n\n— OxiCloud"
                 },
-                "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_file": "bestand",
+                "kind_folder": "map",
+                "english_fallback_divider": "--- Engelse versie hieronder ---"
             }
         }
     },

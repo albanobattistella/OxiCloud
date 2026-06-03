@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "لم يعد رابط تسجيل الدخول صالحًا",
+                "expired_body": "ربما انتهت صلاحية الرابط أو تم استخدامه بالفعل. يمكننا إرسال رابط جديد لك — سيصل إلى صندوق الوارد خلال ثوانٍ.",
+                "resend_to": "أرسل رابطًا جديدًا إلى {{email}}",
+                "generic_unavailable": "لم يعد رابط تسجيل الدخول صالحًا. ربما تم استخدامه بالفعل أو انتهت صلاحيته. اطلب رابطًا جديدًا من صفحة تسجيل الدخول.",
+                "service_unavailable": "تسجيل الدخول عبر الرابط السحري غير مفعّل على هذا الخادم.",
+                "internal_error": "حدث خطأ أثناء تسجيل الدخول. يُرجى المحاولة مرة أخرى.",
+                "resend_failure": "حدث خطأ أثناء إرسال الرابط. يُرجى المحاولة مرة أخرى.",
+                "cross_browser_title": "هل تريد متابعة تسجيل الدخول على هذا الجهاز؟",
+                "cross_browser_body": "لقد فتحت رابط تسجيل الدخول في متصفح أو جهاز مختلف عن الجهاز الذي طلبته منه.",
+                "cross_browser_warning": "إذا كنت قد طلبت هذا الرابط، فمن الآمن المتابعة. إذا لم تطلبه، أغلق هذه الصفحة — النقر على «متابعة» سيُسجّل دخول شخص آخر إلى حسابك.",
+                "cross_browser_continue": "متابعة وتسجيل الدخول",
+                "resend_confirmation_title": "تحقق من صندوق الوارد",
+                "resend_confirmation_body": "إذا كان رابط تسجيل الدخول ينتمي إلى حساب نشط، فقد تم للتو إرسال رابط جديد. يُرجى التحقق من صندوق الوارد.",
+                "return_link": "العودة إلى OxiCloud"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "شارك {{inviter}} معك {{kind}} على OxiCloud",
+                    "body": "شارك {{inviter}} معك {{kind}} على OxiCloud.\n\nافتحه بالنقر على الرابط أدناه:\n{{link}}\n\nيعمل الرابط مرة واحدة وتنتهي صلاحيته خلال {{ttl_hours}} ساعة.\nإذا لم تكن تتوقع هذه الدعوة، يمكنك تجاهل هذه الرسالة.\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "تسجيل الدخول إلى OxiCloud",
+                    "body": "مرحبًا،\n\nاستخدم الرابط أدناه لتسجيل الدخول إلى OxiCloud. يعمل الرابط مرة واحدة وتنتهي صلاحيته خلال {{ttl_minutes}} دقيقة. افتحه على الجهاز نفسه الذي طلبت منه الرابط.\n\n{{link}}\n\nإذا لم تطلب رابط تسجيل الدخول هذا، يمكنك تجاهل هذه الرسالة — لا حاجة لأي إجراء إضافي.\n\n— OxiCloud"
                 },
-                "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_file": "ملف",
+                "kind_folder": "مجلد",
+                "english_fallback_divider": "--- النسخة الإنجليزية أدناه ---"
             }
         }
     },

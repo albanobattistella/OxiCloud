@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "Este enlace de inicio de sesión ya no es válido",
+                "expired_body": "Es posible que el enlace haya expirado o ya se haya utilizado. Podemos enviarte uno nuevo — llegará a tu bandeja de entrada en unos segundos.",
+                "resend_to": "Enviar un nuevo enlace a {{email}}",
+                "generic_unavailable": "Este enlace de inicio de sesión ya no es válido. Es posible que ya se haya usado o que haya expirado. Solicita uno nuevo desde la página de inicio de sesión.",
+                "service_unavailable": "El inicio de sesión por enlace mágico no está habilitado en este servidor.",
+                "internal_error": "Algo salió mal al iniciar sesión. Por favor, inténtalo de nuevo.",
+                "resend_failure": "Algo salió mal al enviar el enlace. Por favor, inténtalo de nuevo.",
+                "cross_browser_title": "¿Continuar el inicio de sesión en este dispositivo?",
+                "cross_browser_body": "Has abierto este enlace de inicio de sesión en un navegador o dispositivo diferente del que lo solicitó.",
+                "cross_browser_warning": "Si solicitaste este enlace, es seguro continuar. Si no, cierra esta página — hacer clic en Continuar iniciaría sesión a otra persona en tu cuenta.",
+                "cross_browser_continue": "Continuar e iniciar sesión",
+                "resend_confirmation_title": "Revisa tu bandeja de entrada",
+                "resend_confirmation_body": "Si el enlace de inicio de sesión pertenecía a una cuenta activa, se acaba de enviar uno nuevo. Por favor, revisa tu bandeja de entrada.",
+                "return_link": "Volver a OxiCloud"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "{{inviter}} ha compartido un {{kind}} contigo en OxiCloud",
+                    "body": "{{inviter}} ha compartido un {{kind}} contigo en OxiCloud.\n\nÁbrelo haciendo clic en el enlace de abajo:\n{{link}}\n\nEl enlace es de un solo uso y expira en {{ttl_hours}} horas.\nSi no esperabas esta invitación, puedes ignorar este mensaje.\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "Inicia sesión en OxiCloud",
+                    "body": "Hola,\n\nUsa el enlace de abajo para iniciar sesión en OxiCloud. El enlace es de un solo uso y expira en {{ttl_minutes}} minutos. Ábrelo en el mismo dispositivo donde lo solicitaste.\n\n{{link}}\n\nSi no solicitaste este enlace de inicio de sesión, puedes ignorar este mensaje — no se necesita ninguna acción adicional.\n\n— OxiCloud"
                 },
-                "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_file": "archivo",
+                "kind_folder": "carpeta",
+                "english_fallback_divider": "--- Versión en inglés a continuación ---"
             }
         }
     },

@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "此登入連結已不再有效",
+                "expired_body": "連結可能已過期或已被使用。我們可以為您發送一個新的 — 幾秒鐘內將會抵達您的收件匣。",
+                "resend_to": "發送新連結至 {{email}}",
+                "generic_unavailable": "此登入連結已不再有效。它可能已被使用或已過期。請在登入頁面請求新連結。",
+                "service_unavailable": "此伺服器未啟用魔法連結登入。",
+                "internal_error": "登入時發生錯誤。請重試。",
+                "resend_failure": "發送連結時發生錯誤。請重試。",
+                "cross_browser_title": "在此裝置上繼續登入?",
+                "cross_browser_body": "您在與請求時不同的瀏覽器或裝置上開啟了此登入連結。",
+                "cross_browser_warning": "如果是您請求了此連結,可以安全繼續。否則,請關閉此頁面 — 點擊「繼續」將使其他人登入您的帳戶。",
+                "cross_browser_continue": "繼續並登入",
+                "resend_confirmation_title": "請檢查您的收件匣",
+                "resend_confirmation_body": "如果登入連結屬於活躍帳戶,新連結剛剛已發送。請檢查您的收件匣。",
+                "return_link": "返回 OxiCloud"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "{{inviter}} 在 OxiCloud 上與您分享了一個{{kind}}",
+                    "body": "{{inviter}} 在 OxiCloud 上與您分享了一個{{kind}}。\n\n點擊下方連結開啟:\n{{link}}\n\n該連結僅可使用一次,並將在 {{ttl_hours}} 小時後過期。\n如果您未預期收到此邀請,可以忽略此訊息。\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "登入 OxiCloud",
+                    "body": "您好,\n\n使用下方連結登入 OxiCloud。該連結僅可使用一次,並將在 {{ttl_minutes}} 分鐘後過期。請在請求時使用的同一裝置上開啟。\n\n{{link}}\n\n如果您未請求此登入連結,可以忽略此訊息 — 無需進一步操作。\n\n— OxiCloud"
                 },
-                "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_file": "檔案",
+                "kind_folder": "資料夾",
+                "english_fallback_divider": "--- 以下為英文版本 ---"
             }
         }
     },

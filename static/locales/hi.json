@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "यह साइन-इन लिंक अब वैध नहीं है",
+                "expired_body": "लिंक समाप्त हो गया हो सकता है या पहले से उपयोग किया जा चुका हो सकता है। हम आपको एक नया भेज सकते हैं — यह कुछ ही सेकंड में आपके इनबॉक्स में पहुँच जाएगा।",
+                "resend_to": "{{email}} को नया लिंक भेजें",
+                "generic_unavailable": "यह साइन-इन लिंक अब वैध नहीं है। यह पहले से उपयोग किया जा चुका हो सकता है या समाप्त हो गया हो सकता है। लॉगिन पृष्ठ से नया लिंक माँगें।",
+                "service_unavailable": "इस सर्वर पर मैजिक-लिंक साइन-इन सक्षम नहीं है।",
+                "internal_error": "साइन इन करते समय कुछ गलत हो गया। कृपया फिर से प्रयास करें।",
+                "resend_failure": "लिंक भेजते समय कुछ गलत हो गया। कृपया फिर से प्रयास करें।",
+                "cross_browser_title": "इस डिवाइस पर साइन-इन जारी रखें?",
+                "cross_browser_body": "आपने यह साइन-इन लिंक उससे भिन्न ब्राउज़र या डिवाइस में खोला है जहाँ से आपने इसका अनुरोध किया था।",
+                "cross_browser_warning": "यदि आपने यह लिंक माँगा है, तो आगे बढ़ना सुरक्षित है। यदि नहीं, तो इस पृष्ठ को बंद कर दें — जारी रखें पर क्लिक करने से कोई और आपके खाते में साइन-इन हो जाएगा।",
+                "cross_browser_continue": "जारी रखें और साइन इन करें",
+                "resend_confirmation_title": "अपना इनबॉक्स देखें",
+                "resend_confirmation_body": "यदि साइन-इन लिंक किसी सक्रिय खाते का था, तो अभी एक नया लिंक भेजा गया है। कृपया अपना इनबॉक्स देखें।",
+                "return_link": "OxiCloud पर वापस जाएँ"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "{{inviter}} ने OxiCloud पर आपके साथ एक {{kind}} साझा किया",
+                    "body": "{{inviter}} ने OxiCloud पर आपके साथ एक {{kind}} साझा किया है।\n\nइसे नीचे दिए गए लिंक पर क्लिक करके खोलें:\n{{link}}\n\nलिंक केवल एक बार काम करता है और {{ttl_hours}} घंटों में समाप्त हो जाता है।\nयदि आप इस आमंत्रण की अपेक्षा नहीं कर रहे थे, तो आप इस संदेश को अनदेखा कर सकते हैं।\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "OxiCloud में साइन इन करें",
+                    "body": "नमस्ते,\n\nOxiCloud में साइन इन करने के लिए नीचे दिए गए लिंक का उपयोग करें। लिंक केवल एक बार काम करता है और {{ttl_minutes}} मिनट में समाप्त हो जाता है। इसे उसी डिवाइस पर खोलें जहाँ से आपने अनुरोध किया था।\n\n{{link}}\n\nयदि आपने यह साइन-इन लिंक नहीं माँगा था, तो आप इस संदेश को अनदेखा कर सकते हैं — किसी और कार्रवाई की आवश्यकता नहीं है।\n\n— OxiCloud"
                 },
-                "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_file": "फ़ाइल",
+                "kind_folder": "फ़ोल्डर",
+                "english_fallback_divider": "--- अंग्रेज़ी संस्करण नीचे ---"
             }
         }
     },

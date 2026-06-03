@@ -2,33 +2,33 @@
     "server": {
         "magic_link": {
             "page": {
-                "expired_title": "This sign-in link is no longer valid",
-                "expired_body": "The link may have expired or already been used. We can send you a fresh one — it'll arrive in your inbox in a few seconds.",
-                "resend_to": "Send a fresh link to {{email}}",
-                "generic_unavailable": "This sign-in link is no longer valid. It may have already been used or expired. Request a fresh link from the login page.",
-                "service_unavailable": "Magic-link sign-in is not enabled on this server.",
-                "internal_error": "Something went wrong while signing you in. Please try again.",
-                "resend_failure": "Something went wrong while sending the link. Please try again.",
-                "cross_browser_title": "Continue signing in on this device?",
-                "cross_browser_body": "You opened this sign-in link in a different browser or device than the one where you requested it.",
-                "cross_browser_warning": "If you requested this link, it's safe to continue. If you didn't, close this page — clicking Continue would sign someone else into your account.",
-                "cross_browser_continue": "Continue and sign in",
-                "resend_confirmation_title": "Check your inbox",
-                "resend_confirmation_body": "If the sign-in link belonged to an active account, a fresh link has just been sent. Please check your inbox.",
-                "return_link": "Return to OxiCloud"
+                "expired_title": "このサインインリンクは無効になりました",
+                "expired_body": "リンクは期限切れか、すでに使用された可能性があります。新しいリンクをお送りできます — 数秒以内にメールが届きます。",
+                "resend_to": "{{email}} に新しいリンクを送信",
+                "generic_unavailable": "このサインインリンクは無効になりました。すでに使用されたか、期限が切れた可能性があります。ログインページから新しいリンクをリクエストしてください。",
+                "service_unavailable": "マジックリンクサインインは、このサーバーで有効になっていません。",
+                "internal_error": "サインイン中にエラーが発生しました。もう一度お試しください。",
+                "resend_failure": "リンクの送信中にエラーが発生しました。もう一度お試しください。",
+                "cross_browser_title": "このデバイスでサインインを続けますか?",
+                "cross_browser_body": "このサインインリンクを、リクエストしたものとは別のブラウザーまたはデバイスで開きました。",
+                "cross_browser_warning": "このリンクをあなたがリクエストしたのであれば、続行しても安全です。そうでない場合は、このページを閉じてください — 「続行」をクリックすると、他の人があなたのアカウントにサインインしてしまいます。",
+                "cross_browser_continue": "続行してサインイン",
+                "resend_confirmation_title": "受信トレイをご確認ください",
+                "resend_confirmation_body": "サインインリンクがアクティブなアカウントのものであれば、新しいリンクが今送信されました。受信トレイをご確認ください。",
+                "return_link": "OxiCloud に戻る"
             },
             "email": {
                 "invitation": {
-                    "subject": "{{inviter}} shared a {{kind}} with you on OxiCloud",
-                    "body": "{{inviter}} shared a {{kind}} with you on OxiCloud.\n\nOpen it by clicking the link below:\n{{link}}\n\nThe link works once and expires in {{ttl_hours}} hours.\nIf you didn't expect this invitation, you can safely ignore this message.\n\n— OxiCloud"
+                    "subject": "{{inviter}} さんが OxiCloud で {{kind}} をあなたと共有しました",
+                    "body": "{{inviter}} さんが OxiCloud で {{kind}} をあなたと共有しました。\n\n以下のリンクをクリックして開いてください:\n{{link}}\n\nリンクは一度のみ有効で、{{ttl_hours}} 時間で期限切れになります。\nこの招待に心当たりがない場合は、このメッセージを無視していただいて結構です。\n\n— OxiCloud"
                 },
                 "login": {
-                    "subject": "Sign in to OxiCloud",
-                    "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
+                    "subject": "OxiCloud にサインイン",
+                    "body": "こんにちは、\n\n以下のリンクから OxiCloud にサインインしてください。リンクは一度のみ有効で、{{ttl_minutes}} 分で期限切れになります。リクエストしたものと同じデバイスで開いてください。\n\n{{link}}\n\nこのサインインリンクをリクエストしていない場合は、このメッセージを無視していただいて結構です — それ以上の操作は必要ありません。\n\n— OxiCloud"
                 },
-                "kind_file": "file",
-                "kind_folder": "folder",
-                "english_fallback_divider": "--- English version below ---"
+                "kind_file": "ファイル",
+                "kind_folder": "フォルダー",
+                "english_fallback_divider": "--- 以下は英語版 ---"
             }
         }
     },
