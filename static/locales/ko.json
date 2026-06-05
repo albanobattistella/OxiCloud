@@ -835,7 +835,8 @@
         "size": "크기",
         "favoriteDate": "즐겨찾기 날짜",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "새 항목"
     },
     "dateBucket": {
         "today": "오늘",

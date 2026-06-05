@@ -835,7 +835,8 @@
         "size": "Размер",
         "favoriteDate": "Дата добавления в избранное",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "Новые"
     },
     "dateBucket": {
         "today": "Сегодня",

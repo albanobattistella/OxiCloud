@@ -835,7 +835,8 @@
         "size": "اندازه",
         "favoriteDate": "تاریخ مورد علاقه",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "جدید"
     },
     "dateBucket": {
         "today": "امروز",

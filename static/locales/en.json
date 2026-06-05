@@ -845,7 +845,8 @@
         "accessedAt": "Accessed date",
         "modifiedAt": "Modified date",
         "createdAt": "Created date",
-        "size": "Size"
+        "size": "Size",
+        "justAdded": "New"
     },
     "dateBucket": {
         "today": "Today",

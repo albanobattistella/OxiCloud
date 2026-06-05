@@ -41,6 +41,45 @@
     background-color: var(--color-item);
 }
 
+/* Brief pulse on rows that were just optimistically inserted (e.g.
+   newly created folder, upload completion, drag-drop move into the
+   current folder). Pure CSS so timing is deterministic — the JS adds
+   the class, the animation auto-clears the background, and a
+   single `animationend` listener removes the class.
+
+   `scroll-margin-top` reserves space above the row for the sticky
+   page header (`.page-sticky-header` ≈ 80 px). Without it,
+   `scrollIntoView({ block: 'nearest' })` aligns the row's top edge
+   against the viewport's top edge — which the sticky header is
+   currently covering — so the user only sees the row's bottom edge.
+   `scroll-margin-bottom` gives a touch of breathing room when the
+   scroll happens to land the row near the viewport bottom. */
+.file-item.resource-row--just-added {
+    animation: resource-row-just-added 1.5s ease-out;
+    scroll-margin-top: 100px;
+    scroll-margin-bottom: 24px;
+}
+
+@keyframes resource-row-just-added {
+    0% {
+        background-color: var(--color-success-bg);
+    }
+
+    100% {
+        background-color: transparent;
+    }
+}
+
+/* Client-only "New" swimlane created on the fly by `addItem()` when
+   the view is grouped. Subtler styling than a natural-group lane: the
+   user understands the pin is temporary (it dissolves on next full
+   reload), so we don't want the bar to dominate the list. The pinned
+   placement at the top of the container is what makes it
+   discoverable; the header just confirms the intent. */
+.resource-list__swimlane-group--just-added > .resource-list__swimlane-header {
+    color: var(--color-success-text);
+}
+
 .file-item.selected {
     background-color: var(--color-item-selected);
 }

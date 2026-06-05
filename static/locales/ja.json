@@ -835,7 +835,8 @@
         "size": "サイズ",
         "favoriteDate": "お気に入り登録日",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "新規"
     },
     "dateBucket": {
         "today": "今日",

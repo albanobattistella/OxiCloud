@@ -835,7 +835,8 @@
         "size": "Grootte",
         "favoriteDate": "Favoritendatum",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "Nieuw"
     },
     "dateBucket": {
         "today": "Vandaag",
