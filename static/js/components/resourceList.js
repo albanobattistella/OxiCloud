@@ -29,6 +29,15 @@ import { createUserVignette } from './userVignette.js';
  */
 
 /**
+ * Reusable swimlane key for the client-side "just added" lane that
+ * `addItem()` opens at the top of the list in grouped views. Distinct
+ * from any natural group key the server might produce so the lookup
+ * can't collide with a real bucket whose label happens to read "New".
+ * @type {string}
+ */
+const JUST_ADDED_KEY = '__oxicloud_just_added__';
+
+/**
  * @typedef {Object} CustomAction
  * @property {string} iconHtml   - Inner HTML for the button icon (e.g. `<i class="fas fa-undo"></i>`).
  * @property {string} [labelKey] - i18n key used for the button's `title` / `aria-label`.
@@ -132,6 +141,16 @@ export class ResourceListComponent {
         this._lastGroupEl = null;
 
         /**
+         * Optional grouping-key resolver stored between `render()` / `append()`
+         * calls so `addItem()` can place a new row in the correct swimlane
+         * without the caller having to re-supply it. `undefined` means the
+         * current view is flat (no group-by); `null` is never stored — only
+         * function or `undefined`.
+         * @type {((item: FileItem|FolderItem) => string|null) | undefined}
+         */
+        this._groupFn = undefined;
+
+        /**
          * Optional label-resolver stored between `render()` and `append()` calls.
          * @type {((key: string) => string) | undefined}
          */
@@ -184,6 +203,7 @@ export class ResourceListComponent {
         // Reset group tracking for the fresh render
         this._lastGroupKey = undefined;
         this._lastGroupEl = null;
+        this._groupFn = groupFn;
         this._groupLabelFn = groupLabelFn;
         this._headerNodeFn = headerNodeFn;
 
@@ -205,7 +225,13 @@ export class ResourceListComponent {
      * @param {((key: string) => HTMLElement)=} headerNodeFn
      */
     append(items, groupFn, groupLabelFn, headerNodeFn) {
-        this._appendItems(items, groupFn, groupLabelFn ?? this._groupLabelFn, headerNodeFn ?? this._headerNodeFn);
+        // Persist the latest non-undefined callbacks so `addItem()` can
+        // reuse them without the caller having to re-supply them on every
+        // optimistic insertion.
+        if (groupFn !== undefined) this._groupFn = groupFn;
+        if (groupLabelFn !== undefined) this._groupLabelFn = groupLabelFn;
+        if (headerNodeFn !== undefined) this._headerNodeFn = headerNodeFn;
+        this._appendItems(items, groupFn ?? this._groupFn, groupLabelFn ?? this._groupLabelFn, headerNodeFn ?? this._headerNodeFn);
     }
 
     /** Remove all items (but keep `.list-header` if present). */
@@ -218,6 +244,9 @@ export class ResourceListComponent {
         this._lastClickedIndex = -1;
         this._lastGroupKey = undefined;
         this._lastGroupEl = null;
+        this._groupFn = undefined;
+        this._groupLabelFn = undefined;
+        this._headerNodeFn = undefined;
         // Hand delegation back to ui.js
         delete this._container.dataset.managedBy;
     }
@@ -276,16 +305,128 @@ export class ResourceListComponent {
     /**
      * Append a single item, skipping silently if already present (duplicate guard).
      * Clears the empty-state placeholder when the first item is added.
+     *
+     * Group-by aware: if the current view is grouped, the row goes into
+     * a dedicated **"New" swimlane pinned at the top of the list** that
+     * is created on first call and reused across subsequent inserts in
+     * the same session. This deliberately sidesteps re-computing the
+     * item's natural bucket on the client:
+     *
+     * - Different group-by dimensions (date, type, size, …) would each
+     *   need their own resolver, and date-bucket math is sensitive to
+     *   clock skew between client and server.
+     * - Cross-swimlane sort-position is impossible to mirror exactly
+     *   without re-implementing the server's tiebreaker chain.
+     *
+     * The "New" lane is purely client-side and dissolves on the next
+     * full reload (when the server's authoritative grouping reasserts).
+     * Predictable and uniform across every group-by mode.
+     *
      * @param {FileItem|FolderItem} item
+     * @param {{ scroll?: boolean, highlight?: boolean }} [opts]
+     *   - `scroll`: smooth-scroll the new row into view. The
+     *     `.resource-row--just-added` class also sets `scroll-margin`
+     *     so the sticky page header doesn't cover the row.
+     *   - `highlight`: flash a brief CSS pulse on the new row so the
+     *     user can spot it amid similar siblings.
+     * @returns {HTMLElement | null} The inserted row, or `null` when the
+     *   item was deduped.
      */
-    addItem(item) {
-        if (this._items.has(item.id)) return;
+    addItem(item, opts = {}) {
+        if (this._items.has(item.id)) return null;
         // Also guard against stale DOM remnants not tracked in _items
         const isFile = 'mime_type' in item;
         const attr = isFile ? `data-file-id="${item.id}"` : `data-folder-id="${item.id}"`;
-        if (this._container.querySelector(`.file-item[${attr}]`)) return;
+        if (this._container.querySelector(`.file-item[${attr}]`)) return null;
         this._container.classList.remove('hidden');
-        this._appendItems([item]);
+
+        /** @type {HTMLElement | null} */
+        let row = null;
+
+        if (this._groupFn) {
+            // Grouped view → drop the new row into the top-of-list
+            // "New" swimlane, creating it on first call.
+            const lane = this._ensureJustAddedLane();
+            this._items.set(item.id, item);
+            row = isFile ? this._createFileItem(/** @type {FileItem} */ (item)) : this._createFolderItem(/** @type {FolderItem} */ (item));
+            lane.appendChild(row);
+        } else {
+            // Flat list (no grouping) — append at the end like before.
+            this._appendItems([item]);
+            row = /** @type {HTMLElement | null} */ (this._container.querySelector(`.file-item[${attr}]`));
+        }
+
+        if (!row) return null;
+
+        if (opts.highlight) {
+            row.classList.add('resource-row--just-added');
+            // Self-cleaning: drop the class once the keyframe completes
+            // so a future re-render starts from a neutral baseline.
+            row.addEventListener('animationend', () => row?.classList.remove('resource-row--just-added'), { once: true });
+        }
+        if (opts.scroll) {
+            // `block: 'nearest'` is a no-op when the row is already in
+            // view. `.resource-row--just-added` sets `scroll-margin-top`
+            // so the sticky page header doesn't clip the row when the
+            // scroll lands.
+            row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+
+        return row;
+    }
+
+    /**
+     * Ensure the top-of-list "New" swimlane exists and return its
+     * wrapper. Created on first call after a render; reused across
+     * subsequent `addItem()` calls in the same session. The lane
+     * dissolves on the next `render()` / `clear()`, at which point
+     * the server's authoritative grouping reasserts.
+     *
+     * Header label uses i18n key `groupby.justAdded` with an English
+     * fallback so views that haven't translated it still read sensibly.
+     *
+     * @returns {HTMLElement}
+     */
+    _ensureJustAddedLane() {
+        const existing = this._findLaneByKey(JUST_ADDED_KEY);
+        if (existing) return existing;
+
+        const lane = document.createElement('div');
+        lane.className = 'resource-list__swimlane-group resource-list__swimlane-group--just-added';
+        lane.dataset.groupKey = JUST_ADDED_KEY;
+
+        const header = document.createElement('div');
+        header.className = 'resource-list__swimlane-header';
+        header.dataset.swimlaneHeader = 'true';
+        header.textContent = i18n.t('groupby.justAdded', 'New');
+        lane.appendChild(header);
+
+        // Insert at the very top of the container, immediately after
+        // the optional `.list-header` row, so the affordance is
+        // discoverable and the row's scroll-into-view brings the
+        // swimlane header into view too.
+        const listHeader = this._container.querySelector('.list-header');
+        if (listHeader?.nextSibling) {
+            this._container.insertBefore(lane, listHeader.nextSibling);
+        } else if (listHeader) {
+            this._container.appendChild(lane);
+        } else {
+            this._container.prepend(lane);
+        }
+        return lane;
+    }
+
+    /**
+     * Locate an on-screen swimlane wrapper by its group key. Returns
+     * `null` when no swimlane currently matches.
+     *
+     * @param {string} key
+     * @returns {HTMLElement | null}
+     */
+    _findLaneByKey(key) {
+        // CSS.escape covers arbitrary key shapes (dates with colons,
+        // UUIDs with dashes, etc.) so the attribute selector is safe.
+        return /** @type {HTMLElement | null} */ (this._container.querySelector(`.resource-list__swimlane-group[data-group-key="${CSS.escape(String(key))}"]`));
     }
 
     /**
@@ -404,6 +545,11 @@ export class ResourceListComponent {
                     if (key !== null) {
                         fragmentGroup = document.createElement('div');
                         fragmentGroup.className = 'resource-list__swimlane-group';
+                        // Stamp the group key on the wrapper so `addItem()`
+                        // can locate this swimlane later via
+                        // `_findLaneByKey()` and append into it without a
+                        // full re-render.
+                        fragmentGroup.dataset.groupKey = key;
                         fragmentGroup.appendChild(this._createGroupHeader(key, groupLabelFn, headerNodeFn));
                         fragment.appendChild(fragmentGroup);
                     }

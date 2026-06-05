@@ -63,11 +63,13 @@ Content-Type: application/json
 HTTP 201
 # The response carries the resolved subject as a regular user UUID —
 # externals never surface as a distinct subject_type post-PR-9.3a.
+# PR N1: POST /api/grants now wraps the array in
+# `CreateGrantResponseDto { grants, notification }`.
 [Asserts]
-jsonpath "$[0].subject.type" == "user"
-jsonpath "$[0].resource.id" == "{{ext_folder_id}}"
+jsonpath "$.grants[0].subject.type" == "user"
+jsonpath "$.grants[0].resource.id" == "{{ext_folder_id}}"
 [Captures]
-bob_user_id: jsonpath "$[0].subject.id"
+bob_user_id: jsonpath "$.grants[0].subject.id"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -144,7 +146,7 @@ Content-Type: application/json
 
 HTTP 201
 [Asserts]
-jsonpath "$[0].subject.id" == "{{bob_user_id}}"
+jsonpath "$.grants[0].subject.id" == "{{bob_user_id}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -447,7 +449,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-rl_user_1_id: jsonpath "$[0].subject.id"
+rl_user_1_id: jsonpath "$.grants[0].subject.id"
 
 # 16b — 4th invite (4/3) is rejected with 429 + Retry-After. The
 #       cap is visible because Alice is authenticated and her own

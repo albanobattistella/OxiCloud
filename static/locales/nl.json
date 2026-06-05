@@ -20,7 +20,7 @@
             "email": {
                 "invitation": {
                     "subject": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud",
-                    "body": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud.\n\nOpen het door op de onderstaande link te klikken:\n{{link}}\n\nDe link werkt eenmalig en verloopt over {{ttl_hours}} uur.\nAls je deze uitnodiging niet verwacht, kun je dit bericht negeren.\n\n— OxiCloud"
+                    "body": "{{inviter_full}} heeft een {{kind}} met je gedeeld op OxiCloud.\n\nOpen het door op de onderstaande link te klikken:\n{{link}}\n\nDe link werkt eenmalig en verloopt over {{ttl_hours}} uur.\nAls je deze uitnodiging niet verwacht, kun je dit bericht negeren.\n\n— OxiCloud"
                 },
                 "login": {
                     "subject": "Aanmelden bij OxiCloud",
@@ -29,6 +29,12 @@
                 "kind_file": "bestand",
                 "kind_folder": "map",
                 "english_fallback_divider": "--- Engelse versie hieronder ---"
+            }
+        },
+        "notification": {
+            "share": {
+                "subject": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud",
+                "body": "{{inviter_full}} heeft een {{kind}} met je gedeeld op OxiCloud.\n\nOpen OxiCloud om je nieuwe gedeelde item te bekijken:\n{{login_link}}\n\nMisschien heb je nog meer nieuwe gedeelde items van {{inviter}} — meld je aan om al je gedeelde items te zien.\n\n— OxiCloud\n\nJe ontvangt dit bericht omdat je een OxiCloud-account hebt en je voorkeur voor deelmeldingen aanstaat. Je kunt het uitzetten in je profiel (Stuur me een e-mail wanneer iemand iets met mij deelt)."
             }
         }
     },
@@ -190,7 +196,8 @@
         "shareCopied": "Link gekopieerd naar klembord",
         "shareCreated": "Deellink succesvol aangemaakt",
         "shareUpdated": "Deelinstellingen bijgewerkt",
-        "shareRemoved": "Delen verwijderd"
+        "shareRemoved": "Delen verwijderd",
+        "inviteByEmail": "Uitnodigen via e-mail — uitnodiging wordt verzonden"
     },
     "share_dialogTitle": "Deellink",
     "share_linkLabel": "Deellink:",
@@ -691,7 +698,23 @@
         "migration_verify_passed": "Verificatie geslaagd",
         "migration_verify_failed": "Verificatie mislukt",
         "migration_failed_blobs": "Mislukte blobs",
-        "testing": "Bezig met testen..."
+        "testing": "Bezig met testen...",
+        "smtp_disabled": "Uitgeschakeld (host niet ingesteld)",
+        "smtp_enabled": "Ingeschakeld",
+        "smtp_enabled_label": "Status",
+        "smtp_intro": "SMTP wordt uitsluitend geconfigureerd via omgevingsvariabelen (OXICLOUD_SMTP_*). De onderstaande waarden worden gelezen uit de actieve server — om ze te wijzigen, bewerk de omgeving en herstart OxiCloud.",
+        "smtp_not_configured": "SMTP is niet geconfigureerd op deze server.",
+        "smtp_send_failed": "Verzenden mislukt.",
+        "smtp_send_test": "Test-e-mail verzenden",
+        "smtp_sending": "Bezig met verzenden…",
+        "smtp_sent": "Test-e-mail verzonden.",
+        "smtp_server_code": "Serverantwoord",
+        "smtp_test_intro": "Verzendt een vooraf gedefinieerd diagnostisch bericht naar de onderstaande ontvanger en rapporteert het antwoord van de SMTP-server, zodat je het kunt correleren met je relay-logboeken.",
+        "smtp_test_missing_to": "Voer een ontvangeradres in.",
+        "smtp_test_title": "Test-e-mail verzenden",
+        "smtp_test_to": "Ontvangeradres",
+        "smtp_title": "Uitgaande e-mail (SMTP)",
+        "tab_smtp": "SMTP"
     },
     "profile": {
         "page_title": "Profiel",
@@ -742,6 +765,8 @@
         "username_already_claimed": "Gebruikersnaam ingesteld en niet wijzigbaar (DAV/NextCloud-clients zijn ervan afhankelijk).",
         "given_name": "Voornaam",
         "family_name": "Achternaam",
+        "notify_on_share": "Stuur me een e-mail wanneer iemand iets met mij deelt",
+        "notify_on_share_hint": "Wanneer uitgevinkt, verschijnen gedeelde items nog steeds in je account — je krijgt er alleen geen e-mail over.",
         "save_profile": "Wijzigingen opslaan",
         "profile_saved": "Profiel bijgewerkt",
         "profile_no_changes": "Geen wijzigingen om op te slaan.",
@@ -810,7 +835,8 @@
         "size": "Grootte",
         "favoriteDate": "Favoritendatum",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "Nieuw"
     },
     "dateBucket": {
         "today": "Vandaag",
@@ -842,5 +868,15 @@
         "delete_confirm_label": "Typ de groepsnaam ter bevestiging:",
         "delete_confirm_mismatch": "Typ de groepsnaam exact om te bevestigen.",
         "virtual_internal_name": "Intern"
+    },
+    "myshares": {
+        "copyLink": "Link kopiëren",
+        "deleteLink": "Link verwijderen",
+        "notifyByEmail": "Per e-mail notificeren",
+        "notifyFailed": "Notificatie kon niet worden verzonden.",
+        "notifyGroupMembers": "Groepsleden notificeren",
+        "notifyRateLimited": "Te veel notificaties voor deze ontvanger — probeer het later opnieuw.",
+        "removeAccess": "Toegang verwijderen",
+        "resendInvitation": "Uitnodigingsmail opnieuw verzenden"
     }
 }

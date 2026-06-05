@@ -1004,6 +1004,13 @@ const shareModal = {
         const item = this._item;
         const itemType = this._itemType;
 
+        // Accumulate notification outcomes across all create-grant calls
+        // in this apply round so the post-apply summary aggregates ("3
+        // recipients notified, 1 already notified recently") rather than
+        // showing one toast per granted member.
+        /** @type {Array<{kind: string, detail?: string, last_sent_at?: string, retry_after_secs?: number, reason?: string}>} */
+        const notifyOutcomes = [];
+
         try {
             // ── Grants ─────────────────────────────────────────────────────────
             for (const m of this._localMembers) {
@@ -1028,12 +1035,17 @@ const shareModal = {
                     // user_id in the grant DTO. Until `fetchOutgoingGrants`
                     // refreshes below, the row keeps the pending vignette.
                     const subject = m._invitedEmail ? { type: 'email', email: m._invitedEmail } : { type: m.grant.subject.type, id: m.grant.subject.id };
-                    await grants.createGrant({
+                    const result = await grants.createGrant({
                         subject,
                         resource: { type: itemType, id: item.id },
                         role: m.role,
                         expires_at: expiresIso
                     });
+                    // PR N1: collect per-recipient notification outcomes
+                    // so we can show one aggregated summary after the loop.
+                    if (result?.notification?.outcomes) {
+                        notifyOutcomes.push(...result.notification.outcomes);
+                    }
                 }
             }
 
@@ -1076,11 +1088,71 @@ const shareModal = {
 
             Modal.close(true);
             this._onApplied?.();
+
+            // PR N1: surface share-notification outcomes. The granter
+            // needs to know whether the recipient actually got an email
+            // (or was silently coalesced / rate-limited / opted out).
+            // Without a project-wide toast component the cheapest
+            // honest signal is a console log + a one-shot alert() for
+            // the non-success states. A proper toast surface lands in
+            // a small follow-up; the backend data is correct, the UI
+            // is just brief.
+            _surfaceNotifySummary(notifyOutcomes);
         } catch (err) {
             console.error('shareModal._applyAll error:', err);
             if (Modal.confirmBtn) Modal.confirmBtn.disabled = false;
         }
     }
 };
+
+/**
+ * Show a one-shot aggregated summary of share-notification outcomes
+ * after a batch of create-grant calls. v1 surface is minimal — logs
+ * everything to the console for traceability and pops a single alert()
+ * only when at least one recipient was coalesced, rate-limited, or
+ * landed on the not-applicable arm (i.e. the granter SHOULD know the
+ * email didn't go). The all-Sent happy path stays silent because the
+ * modal-close already implies success.
+ *
+ * A proper toast component is deferred; this function is the seam to
+ * upgrade later — replace the alert() body, keep the call site.
+ *
+ * @param {Array<{kind: string, detail?: string, last_sent_at?: string, retry_after_secs?: number, reason?: string}>} outcomes
+ */
+function _surfaceNotifySummary(outcomes) {
+    if (!outcomes || outcomes.length === 0) return;
+
+    // Always log — useful in dev tools regardless of the alert path.
+    console.log('[share] notification outcomes:', outcomes);
+
+    const sent = outcomes.filter((o) => o.kind === 'sent').length;
+    const coalesced = outcomes.filter((o) => o.kind === 'coalesced').length;
+    const rateLimited = outcomes.filter((o) => o.kind === 'rate_limited').length;
+    const notApplicable = outcomes.filter((o) => o.kind === 'not_applicable');
+
+    // Happy path — all sent. Stay silent; the closed modal is the toast.
+    if (coalesced === 0 && rateLimited === 0 && notApplicable.length === 0) return;
+
+    /** @type {string[]} */
+    const lines = [];
+    if (sent > 0) {
+        lines.push(`${sent} recipient(s) notified by email.`);
+    }
+    if (coalesced > 0) {
+        lines.push(`${coalesced} recipient(s) already notified recently — they'll see the share at next login.`);
+    }
+    if (rateLimited > 0) {
+        lines.push(`${rateLimited} recipient(s) hit the notification rate limit — try again later.`);
+    }
+    if (notApplicable.length > 0) {
+        const reasons = notApplicable
+            .map((o) => o.reason)
+            .filter((r, i, arr) => r && arr.indexOf(r) === i)
+            .join(', ');
+        lines.push(`${notApplicable.length} recipient(s) skipped (${reasons || 'unknown'}).`);
+    }
+    // eslint-disable-next-line no-alert -- minimal v1 surface; toast component lands as follow-up
+    alert(lines.join('\n'));
+}
 
 export { shareModal };

@@ -761,6 +761,20 @@ pub struct MagicLinkConfig {
     /// may enforce MFA we shouldn't bypass. See
     /// `magic_link_eligibility()` for the precedence ladder.
     pub open_to_password_users: bool,
+    /// Operator-level kill switch for plain-notification emails to
+    /// internal users (PR N1). When `true` (default), users who can't
+    /// receive a magic link (password users, OIDC users) get a "Hey,
+    /// you got a new grant" mail with a `/login` deep link on every
+    /// share. When `false`, the plain-notification arm is suppressed
+    /// entirely — internal users discover shares only on next login.
+    ///
+    /// This is a coarser knob than the per-user
+    /// `auth.users.notify_on_share` column: when this is `false`, the
+    /// user-level opt-in does not matter. External-user magic-link
+    /// invitations are NOT affected by this flag — those always send,
+    /// because the link is the only way the recipient can claim the
+    /// share for the first time.
+    pub notify_internal_users_on_share: bool,
 }
 
 impl Default for MagicLinkConfig {
@@ -774,6 +788,7 @@ impl Default for MagicLinkConfig {
             send_per_email_per_hour: 5,
             send_per_ip_per_hour: 200,
             open_to_password_users: false,
+            notify_internal_users_on_share: true,
         }
     }
 }
@@ -1474,6 +1489,9 @@ impl AppConfig {
         }
         if let Ok(v) = env::var("OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS") {
             config.magic_link.open_to_password_users = v == "true" || v == "1";
+        }
+        if let Ok(v) = env::var("OXICLOUD_NOTIFY_INTERNAL_USERS_ON_SHARE") {
+            config.magic_link.notify_internal_users_on_share = v == "true" || v == "1";
         }
 
         if let Ok(v) = env::var("OXICLOUD_DEFAULT_LOCALE") {

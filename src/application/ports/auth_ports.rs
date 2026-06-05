@@ -75,6 +75,12 @@ pub trait UserStoragePort: Send + Sync + 'static {
     /// Gets a user by ID
     async fn get_user_by_id(&self, id: Uuid) -> Result<User, DomainError>;
 
+    /// Batch-loads users by id. Order is unspecified; missing ids are
+    /// silently dropped. Used by group-recipient expansion in
+    /// `RecipientNotificationService` to avoid N+1 lookups when notifying
+    /// a group of size N.
+    async fn get_users_by_ids(&self, ids: Vec<Uuid>) -> Result<Vec<User>, DomainError>;
+
     /// Gets a user by username
     async fn get_user_by_username(&self, username: &str) -> Result<User, DomainError>;
 

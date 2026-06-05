@@ -347,6 +347,32 @@ impl PgAclEngine {
         Ok(Some((res, granter)))
     }
 
+    /// Variant of `find_grant_by_id` that also returns the subject —
+    /// needed by `POST /api/grants/{id}/notify` to resolve who to email.
+    /// Returns `(subject, resource, granted_by)` or `None`.
+    pub async fn find_grant_full_by_id(
+        &self,
+        grant_id: Uuid,
+    ) -> Result<Option<(Subject, Resource, Uuid)>, DomainError> {
+        let row: Option<(String, Uuid, String, Uuid, Uuid)> = sqlx::query_as(
+            "SELECT subject_type, subject_id, resource_type, resource_id, granted_by \
+             FROM storage.access_grants WHERE id = $1",
+        )
+        .bind(grant_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("PgAcl", format!("find_grant_full_by_id: {e}")))?;
+
+        let Some((st, sid, rt, rid, granter)) = row else {
+            return Ok(None);
+        };
+        let subject = Subject::from_parts(&st, sid)
+            .ok_or_else(|| DomainError::internal_error("PgAcl", "unknown subject_type"))?;
+        let resource = Resource::from_parts(&rt, rid)
+            .ok_or_else(|| DomainError::internal_error("PgAcl", "unknown resource_type"))?;
+        Ok(Some((subject, resource, granter)))
+    }
+
     /// Row type for all full-grant SELECT queries:
     /// (id, subject_type, subject_id, resource_type, resource_id, permission, granted_by, granted_at, expires_at)
     #[allow(clippy::type_complexity)]
@@ -865,6 +891,8 @@ impl AuthorizationEngine for PgAclEngine {
         //  10  sort_str        Option<String>
         //  11  sort_int        Option<i64>
         //  12  has_password    bool            — token: shares.password_hash IS NOT NULL
+        //  13  is_external     bool            — user: auth.users.is_external (PR N2);
+        //                                       FALSE for token/group subjects.
         type Row = (
             String,
             Uuid,
@@ -878,6 +906,7 @@ impl AuthorizationEngine for PgAclEngine {
             String,
             Option<String>,
             Option<i64>,
+            bool,
             bool,
         );
 
@@ -962,7 +991,8 @@ impl AuthorizationEngine for PgAclEngine {
                            COALESCE(u.username, u.email, sg.name::text, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
                            ag.id AS grant_id, ag.granted_at, ag.expires_at, ag.permission,
                            rp.sort_str, rp.sort_int,
-                           (sh.password_hash IS NOT NULL) AS has_password
+                           (sh.password_hash IS NOT NULL) AS has_password,
+                           COALESCE(u.is_external, FALSE) AS is_external
                     FROM rp
                     JOIN storage.access_grants ag
                       ON ag.resource_type = rp.resource_type AND ag.resource_id = rp.resource_id
@@ -1025,6 +1055,7 @@ impl AuthorizationEngine for PgAclEngine {
                             ag.subject_id,
                             MAX(COALESCE(u.username, u.email, sg.name::text, sh.item_name, ag.subject_id::text)) AS subject_display,
                             BOOL_OR(sh.password_hash IS NOT NULL) AS has_password,
+                            COALESCE(BOOL_OR(u.is_external), FALSE) AS is_external,
                             MAX(CASE
                                 WHEN ag.subject_type = 'group' THEN 0
                                 WHEN ag.subject_type = 'user' THEN 1
@@ -1066,7 +1097,8 @@ impl AuthorizationEngine for PgAclEngine {
                         ag.permission,
                         LOWER(rp.subject_display) AS sort_str,
                         rp.sort_int,
-                        rp.has_password
+                        rp.has_password,
+                        rp.is_external
                     FROM rp
                     JOIN storage.access_grants ag
                       ON ag.resource_type = rp.resource_type
@@ -1110,6 +1142,7 @@ impl AuthorizationEngine for PgAclEngine {
                             ag.subject_id,
                             MAX(COALESCE(u.username, u.email, sh.item_name, ag.subject_id::text)) AS subject_display,
                             BOOL_OR(sh.password_hash IS NOT NULL) AS has_password,
+                            COALESCE(BOOL_OR(u.is_external), FALSE) AS is_external,
                             CASE
                                 WHEN BOOL_OR(ag.permission = 'delete')
                                  AND BOOL_OR(ag.permission = 'share')  THEN 0
@@ -1150,7 +1183,8 @@ impl AuthorizationEngine for PgAclEngine {
                         ag.permission,
                         LOWER(rp.subject_display) AS sort_str,
                         rp.sort_int,
-                        rp.has_password
+                        rp.has_password,
+                        rp.is_external
                     FROM rp
                     JOIN storage.access_grants ag
                       ON ag.resource_type = rp.resource_type
@@ -1199,7 +1233,8 @@ impl AuthorizationEngine for PgAclEngine {
                            COALESCE(u.username, u.email, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
                            ag.id AS grant_id, ag.granted_at, ag.expires_at, ag.permission,
                            NULL::text AS sort_str, NULL::bigint AS sort_int,
-                           (sh.password_hash IS NOT NULL) AS has_password
+                           (sh.password_hash IS NOT NULL) AS has_password,
+                           COALESCE(u.is_external, FALSE) AS is_external
                     FROM rp
                     JOIN storage.access_grants ag
                       ON ag.resource_type = rp.resource_type AND ag.resource_id = rp.resource_id
@@ -1283,6 +1318,7 @@ impl AuthorizationEngine for PgAclEngine {
                     _,
                     _,
                     has_password,
+                    is_external,
                 ) = r;
                 let Some(resource_type) = ResourceKind::parse(&rt_str) else {
                     continue;
@@ -1303,6 +1339,7 @@ impl AuthorizationEngine for PgAclEngine {
                             granted_at,
                             expires_at,
                             has_password,
+                            is_external,
                         },
                     )
                 });
@@ -1399,6 +1436,7 @@ impl AuthorizationEngine for PgAclEngine {
                 _,
                 _,
                 has_password,
+                is_external,
             ) = r;
             let Some(resource_type) = ResourceKind::parse(&rt_str) else {
                 continue;
@@ -1425,6 +1463,7 @@ impl AuthorizationEngine for PgAclEngine {
                     granted_at,
                     expires_at,
                     has_password,
+                    is_external,
                 });
             if !entry.permissions.contains(&perm) {
                 entry.permissions.push(perm);

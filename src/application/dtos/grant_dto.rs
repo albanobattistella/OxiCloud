@@ -263,6 +263,98 @@ impl From<Grant> for GrantDto {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Notification DTOs (PR N1) — surfaced in the create-grant and /notify
+// responses so the frontend can show actionable toasts ("Notified Carol",
+// "Carol already notified recently", "Notified 8 of 10 group members").
+// ════════════════════════════════════════════════════════════════════════════
+
+/// One per resolved recipient. `kind` discriminates; sibling fields are
+/// only meaningful for the matching variant. Tagged JSON shape:
+///
+/// ```json
+/// { "kind": "sent",           "detail": "magic_link" }
+/// { "kind": "sent",           "detail": "plain_notification" }
+/// { "kind": "coalesced",      "last_sent_at": "2026-06-04T12:00:00Z" }
+/// { "kind": "rate_limited",   "retry_after_secs": 1800 }
+/// { "kind": "not_applicable", "reason": "recipient_opted_out" }
+/// ```
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NotifyOutcomeDto {
+    /// An email actually went out for this recipient. `detail` is
+    /// `"magic_link"` (external invitation with a fresh token) or
+    /// `"plain_notification"` (internal "you got a new grant" mail).
+    Sent { detail: String },
+    /// Skipped silently because this (granter, recipient) pair was
+    /// notified less than the coalesce-window ago. The grant is still
+    /// recorded; the recipient sees it next time they log in.
+    Coalesced {
+        last_sent_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// Per-recipient hard cap (5/h) reached. The caller may retry after
+    /// `retry_after_secs`.
+    RateLimited { retry_after_secs: u32 },
+    /// No mail was dispatched for this recipient. `reason` is one of:
+    /// - `"recipient_opted_out"`  — user toggled `notify_on_share = false`
+    /// - `"operator_disabled"`    — `OXICLOUD_NOTIFY_INTERNAL_USERS_ON_SHARE=false`
+    /// - `"no_email"`             — user row has no email on file
+    /// - `"oidc_only_no_email"`   — OIDC-only user with no email claim
+    /// - `"subject_is_token"`     — anonymous link share (the surface
+    ///   that creates the grant or the `/notify` endpoint maps this to 409)
+    NotApplicable { reason: String },
+}
+
+/// The aggregated result of dispatching share notifications for ONE grant
+/// action (one `create_grant` request OR one `/notify` call). Carries
+/// per-recipient outcomes so the frontend can render a single
+/// summary-style toast:
+///
+/// - `total_recipients = 1`, `outcomes[0] = Sent` → "Notified Carol"
+/// - `total_recipients = 1`, `outcomes[0] = Coalesced` → "Carol already
+///   notified recently"
+/// - `total_recipients = N`, all `Sent` → "Notified all N group members"
+/// - `total_recipients = N`, mix → "Notified 8 of 10 — 2 opted out"
+///
+/// `total_recipients` equals `outcomes.len()` after resolution. For
+/// token-subject grants it is `0` (no human recipient — no toast).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct NotifyOutcomeSetDto {
+    pub total_recipients: usize,
+    pub outcomes: Vec<NotifyOutcomeDto>,
+}
+
+impl NotifyOutcomeSetDto {
+    /// Construct an empty set (token subjects, no recipients to notify).
+    pub fn empty() -> Self {
+        Self {
+            total_recipients: 0,
+            outcomes: Vec::new(),
+        }
+    }
+
+    /// Construct from a list of outcomes, deriving `total_recipients`
+    /// from the list length. Use this from `RecipientNotificationService`
+    /// after the per-member loop completes.
+    pub fn from_outcomes(outcomes: Vec<NotifyOutcomeDto>) -> Self {
+        Self {
+            total_recipients: outcomes.len(),
+            outcomes,
+        }
+    }
+}
+
+/// Response body for `POST /api/grants`. Wraps the array of created
+/// grants (one per `permission` in the request) together with the
+/// aggregated notification result. Replaces the previous bare
+/// `Vec<GrantDto>` shape; the frontend share modal is updated in
+/// lockstep.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CreateGrantResponseDto {
+    pub grants: Vec<GrantDto>,
+    pub notification: NotifyOutcomeSetDto,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Shared-with-me DTOs  (GET /api/grants/incoming/resources)
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -372,6 +464,13 @@ pub struct OutgoingResourceGrantDto {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Whether the token has a password set. Always `false` for user subjects.
     pub has_password: bool,
+    /// True when the subject is a magic-link-only external user
+    /// (PR N2). Always `false` for token and group subjects, and for
+    /// internal users. Used by the My Shares per-row menu to choose
+    /// between "Resend invitation email" (external) and "Notify by
+    /// email" (internal).
+    #[serde(default)]
+    pub is_external: bool,
 }
 
 /// One item in the my-shares list.

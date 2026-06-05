@@ -279,6 +279,13 @@ pub struct OutgoingGrantEntry {
     /// True when the token subject has a password set (`storage.shares.password_hash IS NOT NULL`).
     /// Always `false` for `user` subjects.
     pub has_password: bool,
+    /// True when the user subject is a magic-link-only external user
+    /// (`auth.users.is_external = TRUE`). Always `false` for token and
+    /// group subjects, and for internal-user subjects. Surfaced on the
+    /// My Shares DTO so the frontend's per-row menu can label the
+    /// notify item "Resend invitation email" (external) vs "Notify by
+    /// email" (internal).
+    pub is_external: bool,
 }
 
 /// All subjects that the current user has shared a single resource with,

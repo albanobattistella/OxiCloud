@@ -85,6 +85,16 @@ pub struct User {
     /// application layer is the authoritative gatekeeper against the
     /// `LocaleRegistry`.
     preferred_locale: Option<String>,
+    /// Per-user opt-out for share-notification emails (PR N1). TRUE =
+    /// receive a mail when someone grants access to a resource (default);
+    /// FALSE = grant still recorded but `RecipientNotificationService`
+    /// returns `NotApplicable { recipient_opted_out }` and no mail is
+    /// sent. Bypassed for magic-link first-invitations to external users
+    /// — the link is their only way to claim the share, so suppressing
+    /// it would lock them out. Once an external becomes a real account
+    /// and opts out, subsequent shares from other granters honor the
+    /// flag.
+    notify_on_share: bool,
 }
 
 impl User {
@@ -178,6 +188,11 @@ impl User {
             // language switcher, or invitation-time inheritance fill
             // this in later. NULL resolves to OXICLOUD_DEFAULT_LOCALE.
             preferred_locale: None,
+            // PR N1: default to opted-in. The profile checkbox is the
+            // user-facing toggle; the column default in
+            // `users_notify_on_share` mirrors this for rows reconstructed
+            // from disk without going through `new`.
+            notify_on_share: true,
         })
     }
 
@@ -221,6 +236,7 @@ impl User {
             family_name: None,
             email_verified_at: None,
             preferred_locale: None,
+            notify_on_share: true,
         }
     }
 
@@ -245,6 +261,7 @@ impl User {
         family_name: Option<String>,
         email_verified_at: Option<DateTime<Utc>>,
         preferred_locale: Option<String>,
+        notify_on_share: bool,
     ) -> Self {
         Self {
             id,
@@ -266,6 +283,7 @@ impl User {
             family_name,
             email_verified_at,
             preferred_locale,
+            notify_on_share,
         }
     }
 
@@ -339,6 +357,64 @@ impl User {
             Some(u) => u.clone(),
             None => self.id.to_string(),
         }
+    }
+
+    /// Rich, user-facing display label for notification surfaces
+    /// (transactional emails, share invitations, "Alice <a@x.com>
+    /// shared X with you" — anywhere a human is reading the line).
+    ///
+    /// `with_email` controls whether the address is appended as
+    /// `" <email>"` after the name part:
+    /// - `true`  — best for the email **body** ("Alice Smith
+    ///   <alice@example.com> shared a folder with you"), where the
+    ///   extra identifier is helpful at a glance.
+    /// - `false` — best for the **subject line** and other compact
+    ///   contexts where dragging the email into a 80-char inbox row
+    ///   would be noise ("Alice Smith shared a folder with you").
+    ///
+    /// Priority order (mirrors RFC 5322 display-name conventions). The
+    /// `<email>` decoration in cases 1 and 3 is omitted when
+    /// `with_email` is false:
+    ///
+    /// 1. `"Given Family"` (+ ` <email>`) — full name; the most
+    ///    informative form.
+    /// 2. `"username"`     (+ ` <email>`) — handle; the typical case
+    ///    for password / OIDC users without first/last claims.
+    /// 3. `email`                          — last-resort fallback. The
+    ///    raw email address is always present for non-OCM users and is
+    ///    the unambiguous identifier. Returned regardless of
+    ///    `with_email` since it IS the label here.
+    /// 4. shortened UUID                   — failure mode (no email,
+    ///    no username, no given/family — shouldn't happen with current
+    ///    schema invariants but kept defensive for OCM-federated rows).
+    ///
+    /// External users provisioned via magic-link typically have only an
+    /// email and fall through to branch 3. Internal users with OIDC
+    /// JIT often have given/family from the IdP claims → branch 1.
+    /// Sister of [`Self::display_for_audit`], which deliberately
+    /// returns a *less* identifying label for log lines.
+    pub fn display_full(&self, with_email: bool) -> String {
+        let g = self.given_name.as_deref();
+        let f = self.family_name.as_deref();
+        let u = self.username.as_deref();
+        let has_email = !self.email.is_empty();
+
+        if let (Some(g), Some(f)) = (g, f) {
+            if with_email && has_email {
+                return format!("{} {} <{}>", g, f, self.email);
+            }
+            return format!("{} {}", g, f);
+        }
+        if let Some(u) = u {
+            if with_email && has_email {
+                return format!("{} <{}>", u, self.email);
+            }
+            return u.to_string();
+        }
+        if has_email {
+            return self.email.clone();
+        }
+        format!("{}…", &self.id.to_string()[..8])
     }
 
     pub fn oidc_provider(&self) -> Option<&str> {
@@ -427,6 +503,24 @@ impl User {
     /// back to the server default).
     pub fn set_preferred_locale(&mut self, locale: Option<String>) {
         self.preferred_locale = locale;
+        self.updated_at = Utc::now();
+    }
+
+    /// Whether this user wants to receive an email when someone grants
+    /// them access to a resource. `RecipientNotificationService` checks
+    /// this on the plain-notification arm; magic-link first-invitations
+    /// to external users bypass it (otherwise the recipient could never
+    /// claim the share). Defaults TRUE for both the entity constructor
+    /// and the schema column.
+    pub fn notify_on_share(&self) -> bool {
+        self.notify_on_share
+    }
+
+    /// Flip the share-notification preference. The caller is expected
+    /// to have already validated input shape (the field is a boolean,
+    /// so there is no work beyond storage). Bumps `updated_at`.
+    pub fn set_notify_on_share(&mut self, notify: bool) {
+        self.notify_on_share = notify;
         self.updated_at = Utc::now();
     }
 
@@ -582,5 +676,95 @@ impl User {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_user(
+        username: Option<&str>,
+        given: Option<&str>,
+        family: Option<&str>,
+        email: &str,
+    ) -> User {
+        User::from_data_full(
+            Uuid::new_v4(),
+            username.map(str::to_string),
+            email.to_string(),
+            None,
+            UserRole::User,
+            0,
+            0,
+            Utc::now(),
+            Utc::now(),
+            None,
+            true,
+            None,
+            None,
+            None,
+            false,
+            given.map(str::to_string),
+            family.map(str::to_string),
+            None,
+            None,
+            true,
+        )
+    }
+
+    #[test]
+    fn display_full_given_family_with_email() {
+        let u = build_user(Some("alice"), Some("Alice"), Some("Smith"), "alice@x.com");
+        assert_eq!(u.display_full(true), "Alice Smith <alice@x.com>");
+        assert_eq!(u.display_full(false), "Alice Smith");
+    }
+
+    #[test]
+    fn display_full_given_family_takes_priority_over_username() {
+        // Even when the username is set, the full name is more informative
+        // and wins. The username surfaces only as part of the address.
+        let u = build_user(Some("admin"), Some("Bob"), Some("Jones"), "bob@x.com");
+        assert_eq!(u.display_full(true), "Bob Jones <bob@x.com>");
+        assert_eq!(u.display_full(false), "Bob Jones");
+    }
+
+    #[test]
+    fn display_full_username_only() {
+        // The "admin" case the user observed: no given/family on the
+        // bootstrap admin user. With email → "admin <admin@x.com>";
+        // without → just "admin" (compact form for subject lines).
+        let u = build_user(Some("admin"), None, None, "admin@x.com");
+        assert_eq!(u.display_full(true), "admin <admin@x.com>");
+        assert_eq!(u.display_full(false), "admin");
+    }
+
+    #[test]
+    fn display_full_partial_name_falls_through_to_username() {
+        // Given without family (or vice versa) is NOT "rich enough" to
+        // use; we walk to the next priority instead of producing a
+        // "First <email>" half-name.
+        let u = build_user(Some("carol"), Some("Carol"), None, "carol@x.com");
+        assert_eq!(u.display_full(true), "carol <carol@x.com>");
+        assert_eq!(u.display_full(false), "carol");
+    }
+
+    #[test]
+    fn display_full_email_only() {
+        // External users provisioned via magic-link typically have no
+        // username and no given/family — only the email is present.
+        // `with_email` is moot here: the email IS the label.
+        let u = build_user(None, None, None, "external@x.com");
+        assert_eq!(u.display_full(true), "external@x.com");
+        assert_eq!(u.display_full(false), "external@x.com");
+    }
+
+    #[test]
+    fn display_full_partial_name_no_username_falls_to_email() {
+        // Lone given_name without family AND without username → falls
+        // all the way through to the raw email.
+        let u = build_user(None, Some("Solo"), None, "solo@x.com");
+        assert_eq!(u.display_full(true), "solo@x.com");
+        assert_eq!(u.display_full(false), "solo@x.com");
     }
 }

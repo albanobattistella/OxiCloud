@@ -645,6 +645,14 @@ function _renderProfileEdit(user) {
     }
     givenInput.value = user.given_name || '';
     familyInput.value = user.family_name || '';
+
+    const notifyInput = /** @type {HTMLInputElement | null} */ (document.getElementById('profile-edit-notify-on-share'));
+    if (notifyInput) {
+        // notify_on_share is a boolean on the server; default TRUE for
+        // pre-existing rows via the column default, so the checkbox is
+        // ticked unless the user has explicitly opted out.
+        notifyInput.checked = user.notify_on_share !== false;
+    }
 }
 
 /**
@@ -665,7 +673,7 @@ async function submitProfile(e) {
     const givenInput = /** @type {HTMLInputElement} */ (document.getElementById('profile-edit-given-name'));
     const familyInput = /** @type {HTMLInputElement} */ (document.getElementById('profile-edit-family-name'));
 
-    /** @type {{ username?: string, given_name?: string, family_name?: string }} */
+    /** @type {{ username?: string, given_name?: string, family_name?: string, notify_on_share?: boolean }} */
     const body = {};
     if (!usernameInput.disabled && usernameInput.value.trim()) {
         body.username = usernameInput.value.trim();
@@ -674,6 +682,15 @@ async function submitProfile(e) {
     if (given) body.given_name = given;
     const family = familyInput.value.trim();
     if (family) body.family_name = family;
+
+    // Always send the share-notification preference. The backend
+    // compares against the current value and skips the write if
+    // unchanged, so this is idempotent — sending it on every save
+    // simplifies the frontend rather than tracking a dirty bit.
+    const notifyInput = /** @type {HTMLInputElement | null} */ (document.getElementById('profile-edit-notify-on-share'));
+    if (notifyInput) {
+        body.notify_on_share = notifyInput.checked;
+    }
 
     if (Object.keys(body).length === 0) {
         statusEl.innerHTML = `<div class="alert alert-info"><i class="fas fa-info-circle"></i> ${escapeHtml(i18n.t('profile.profile_no_changes'))}</div>`;

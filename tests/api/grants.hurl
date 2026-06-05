@@ -122,9 +122,11 @@ Content-Type: application/json
 }
 
 HTTP 201
+# PR N1: POST /api/grants now wraps results in
+# `CreateGrantResponseDto { grants, notification }`.
 [Asserts]
-jsonpath "$" count == 1
-jsonpath "$[0].permission" == "read"
+jsonpath "$.grants" count == 1
+jsonpath "$.grants[0].permission" == "read"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -205,7 +207,7 @@ Content-Type: application/json
 
 HTTP 201
 [Captures]
-eve_grant_id: jsonpath "$[0].id"
+eve_grant_id: jsonpath "$.grants[0].id"
 
 
 # ─────────────────────────────────────────────────────────────

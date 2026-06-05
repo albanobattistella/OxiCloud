@@ -53,6 +53,14 @@ pub struct UserDto {
     /// through `/api/auth/me` and `PATCH /api/auth/me/profile`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preferred_locale: Option<String>,
+    /// Whether the user wants an email when someone shares a resource
+    /// with them. `true` (default) = receive share-notification mails;
+    /// `false` = grants are still created but no email is sent. Honored
+    /// only on the plain-notification path — magic-link first-invitations
+    /// to brand-new external users always send, otherwise the recipient
+    /// could never claim the share. Round-trips through `/api/auth/me`
+    /// and `PATCH /api/auth/me/profile`.
+    pub notify_on_share: bool,
 }
 
 impl From<User> for UserDto {
@@ -76,6 +84,7 @@ impl From<User> for UserDto {
             family_name: user.family_name().map(str::to_string),
             email_verified_at: user.email_verified_at(),
             preferred_locale: user.preferred_locale().map(str::to_string),
+            notify_on_share: user.notify_on_share(),
         }
     }
 }
@@ -169,6 +178,13 @@ pub struct UpdateProfileDto {
     /// normalises `""` → `None`).
     #[serde(default)]
     pub preferred_locale: Option<String>,
+    /// Whether to receive an email when someone shares a resource with
+    /// the user. Absent → no change (existing setting preserved). Pass
+    /// `true` to opt in, `false` to opt out. Honored only on the
+    /// plain-notification path; magic-link first-invitations to externals
+    /// always send.
+    #[serde(default)]
+    pub notify_on_share: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -48,6 +48,13 @@ pub trait UserRepository: Send + Sync + 'static {
     /// Gets a user by ID
     async fn get_user_by_id(&self, id: Uuid) -> UserRepositoryResult<User>;
 
+    /// Batch-loads a set of users by id, preserving no particular order
+    /// and silently skipping ids that don't match any row. Caller is
+    /// responsible for de-duplicating the input vec. Returns an empty
+    /// vec when given an empty input. Used by group-recipient expansion
+    /// in `RecipientNotificationService` to avoid N+1 queries.
+    async fn get_users_by_ids(&self, ids: Vec<Uuid>) -> UserRepositoryResult<Vec<User>>;
+
     /// Gets a user by username
     async fn get_user_by_username(&self, username: &str) -> UserRepositoryResult<User>;
 

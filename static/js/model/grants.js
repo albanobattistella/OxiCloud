@@ -166,8 +166,26 @@ const grants = {
      * Create a new grant.
      * Body mirrors `CreateGrantDto`: `{ subject, resource, role }` OR `{ subject, resource, permissions }`.
      *
+     * Response shape (PR N1 — `CreateGrantResponseDto`):
+     *
+     * ```json
+     * {
+     *   "grants": [ {Grant}, … ],
+     *   "notification": {
+     *     "total_recipients": 1,
+     *     "outcomes": [{ "kind": "sent", "detail": "plain_notification" }]
+     *   }
+     * }
+     * ```
+     *
+     * `notification.outcomes` is empty for token subjects; size 1 for
+     * user subjects; size N for group subjects (one entry per resolved
+     * member). Callers that just need the grant rows can `.grants`;
+     * callers that want to surface "did Carol get my email?" UX read
+     * `.notification.outcomes[]`.
+     *
      * @param {Object} dto - CreateGrantDto shape
-     * @returns {Promise<Grant[]>}
+     * @returns {Promise<{ grants: Grant[], notification: { total_recipients: number, outcomes: Array<{kind: string, detail?: string, last_sent_at?: string, retry_after_secs?: number, reason?: string}> } }>}
      */
     async createGrant(dto) {
         const response = await fetch('/api/grants', {

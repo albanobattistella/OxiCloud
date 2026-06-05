@@ -268,14 +268,17 @@ impl MagicLinkInviteService {
     /// invitation link. Caller is expected to have already created the
     /// grant rows.
     ///
-    /// `inviter_username` is interpolated into the subject line as a
-    /// trust signal ("Alice shared with you on OxiCloud"). The message
-    /// body is plain text only in v1; HTML templating is out of scope
-    /// (see plan "Out of scope" → "Email template engine").
+    /// `inviter` is interpolated into the subject line ("Alice shared
+    /// with you on OxiCloud") and body ("Alice <alice@x.com> shared a
+    /// folder with you. Open it by..."). Two forms are computed via
+    /// [`User::display_full`] — the short form goes into the subject
+    /// (keeps inbox-row width sane), the email-decorated form goes
+    /// into the body where the extra identifier helps the recipient
+    /// place who's reaching out.
     pub async fn issue_invitation(
         &self,
         recipient: &User,
-        inviter_username: &str,
+        inviter: &User,
         resource: Resource,
     ) -> Result<(), DomainError> {
         // The grant is in place either way; only mint a magic link when
@@ -335,8 +338,16 @@ impl MagicLinkInviteService {
         let locale = self.locale_for(recipient);
         let kind_label = self.i18n_or(kind_key, &locale, &[]).await;
         let ttl_hours = self.magic_link_cfg.invite_ttl_hours.to_string();
+        // Two display forms: `inviter` (short, no email) flows into the
+        // subject line; `inviter_full` (with email decoration) flows
+        // into the body. Templates pick whichever placeholder they
+        // want — see static/locales/en.json `server.magic_link.email.
+        // invitation.*` for the canonical references.
+        let inviter_short = inviter.display_full(false);
+        let inviter_full = inviter.display_full(true);
         let invite_args: Vec<(&str, &str)> = vec![
-            ("inviter", inviter_username),
+            ("inviter", inviter_short.as_str()),
+            ("inviter_full", inviter_full.as_str()),
             ("kind", &kind_label),
             ("link", &link),
             ("ttl_hours", &ttl_hours),

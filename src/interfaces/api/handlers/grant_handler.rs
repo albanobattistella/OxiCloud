@@ -20,14 +20,15 @@ use uuid::Uuid;
 
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::grant_dto::{
-    CreateGrantDto, GrantDto, MySharesDto, OutgoingResourceGrantDto, OutgoingResourceItemDto,
-    PermissionDto, ResourceContentDto, ResourceDto, ResourceTypeDto, SharedWithMeDto,
-    SharedWithMeItemDto, SharedWithMeQuery, SubjectDto, SubjectInputDto, UpdateRoleDto,
-    role_from_permissions,
+    CreateGrantDto, CreateGrantResponseDto, GrantDto, MySharesDto, NotifyOutcomeSetDto,
+    OutgoingResourceGrantDto, OutgoingResourceItemDto, PermissionDto, ResourceContentDto,
+    ResourceDto, ResourceTypeDto, SharedWithMeDto, SharedWithMeItemDto, SharedWithMeQuery,
+    SubjectDto, SubjectInputDto, UpdateRoleDto, role_from_permissions,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
 use crate::application::ports::folder_ports::FolderUseCase;
+use crate::application::services::recipient_notification_service::NotifyTrigger;
 use crate::common::di::AppState;
 #[allow(unused_imports)]
 use crate::common::errors::DomainError;
@@ -50,7 +51,7 @@ type AppStateRef = Arc<AppState>;
     path = "/api/grants",
     request_body = CreateGrantDto,
     responses(
-        (status = 201, description = "Grant(s) created", body = Vec<GrantDto>),
+        (status = 201, description = "Grant(s) created", body = CreateGrantResponseDto),
         (status = 400, description = "Invalid input (both/neither of permissions+role provided)"),
         (status = 404, description = "Resource not found OR caller lacks Share permission"),
     ),
@@ -172,28 +173,78 @@ pub async fn create_grant(
         caller_id
     );
 
-    // Fire the invitation email AFTER the grant rows are in place so a
-    // failed SMTP send can't leave the recipient with mail-but-no-access.
-    // The service swallows SMTP errors (logs only) — the API response
-    // stays 201 Created either way, matching the plan's "201 always
-    // when grants land; mail is best-effort" contract.
-    if let Some(recipient) = invite_recipient
-        && let Some(invite_svc) = state.magic_link_invite_service.as_ref()
-    {
-        let inviter_name = auth_user.username.clone();
-        if let Err(e) = invite_svc
-            .issue_invitation(&recipient, &inviter_name, resource)
-            .await
-        {
-            warn!(
-                "invitation issuance failed for {} (grants already created): {}",
-                recipient.email(),
-                e
-            );
-        }
-    }
+    // PR N1 — route the post-grant notification through the unified
+    // RecipientNotificationService. Handles user/group/token subjects
+    // uniformly (Token subjects return an empty outcome set); applies
+    // per-(granter, recipient) coalesce + per-recipient hard rate
+    // limit; dispatches the magic-link arm (delegating to
+    // MagicLinkInviteService::issue_invitation) for eligible externals
+    // and the plain-notification arm for internal users; honours the
+    // per-user `notify_on_share` opt-out and the operator-level
+    // `OXICLOUD_NOTIFY_INTERNAL_USERS_ON_SHARE` flag. SMTP failures
+    // remain non-fatal — the grant rows are already in place and the
+    // service captures every per-recipient result as a NotifyOutcome
+    // rather than an Err.
+    //
+    // For the email-resolved subject variant we already loaded the
+    // recipient `User` above for the lazy-provision side effect; the
+    // notification service re-resolves the same id, which is cheap and
+    // keeps the entry-point signature uniform across subject types.
+    let _ = invite_recipient; // value used only for its side effect above
 
-    (StatusCode::CREATED, Json(results)).into_response()
+    // Load the granter as a full `User` entity — the notification
+    // service uses display fields (`username`, `given/family_name`) for
+    // the inviter label in the email body. Failure here means the JWT
+    // claims correspond to a user row that has since been deleted; we
+    // return the grants without a notification rather than rolling back.
+    let notification = match (
+        state.recipient_notification_service.as_ref(),
+        state.auth_service.as_ref(),
+    ) {
+        (Some(svc), Some(auth_svc)) => {
+            match auth_svc
+                .auth_application_service
+                .get_user_entity(caller_id)
+                .await
+            {
+                Ok(granter) => match svc
+                    .send_share_notification(
+                        &granter,
+                        subject,
+                        resource,
+                        NotifyTrigger::GrantCreated,
+                    )
+                    .await
+                {
+                    Ok(set) => set.to_dto(),
+                    Err(e) => {
+                        warn!(
+                            "notification dispatch failed for grant action by {}: {}",
+                            caller_id, e
+                        );
+                        NotifyOutcomeSetDto::empty()
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        "granter {} user-row load failed; skipping notification: {}",
+                        caller_id, e
+                    );
+                    NotifyOutcomeSetDto::empty()
+                }
+            }
+        }
+        _ => NotifyOutcomeSetDto::empty(),
+    };
+
+    (
+        StatusCode::CREATED,
+        Json(CreateGrantResponseDto {
+            grants: results,
+            notification,
+        }),
+    )
+        .into_response()
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -244,6 +295,171 @@ pub async fn revoke_grant(
     }
     info!("Revoked grant {grant_id} (caller {caller_id})");
     StatusCode::NO_CONTENT.into_response()
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// POST /api/grants/{id}/notify — manual share-notification resend
+// ════════════════════════════════════════════════════════════════════════════
+
+#[utoipa::path(
+    post,
+    path = "/api/grants/{id}/notify",
+    params(("id" = String, Path, description = "Grant UUID")),
+    responses(
+        (status = 204, description = "Notification(s) dispatched"),
+        (status = 200, description = "Mixed outcome (some recipients coalesced / not-applicable); body carries the full NotifyOutcomeSet", body = NotifyOutcomeSetDto),
+        (status = 404, description = "Grant not found OR caller is not the granter"),
+        (status = 409, description = "Token subject (use the existing /magic/v1/{token}/resend channel)"),
+        (status = 429, description = "Per-recipient hard rate limit exceeded"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "grants"
+)]
+pub async fn notify_grant_recipient(
+    State(state): State<AppStateRef>,
+    auth_user: AuthUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let authz = &state.authorization;
+    let caller_id = auth_user.id;
+
+    let grant_id = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => return AppError::not_found(format!("Grant {id} not found")).into_response(),
+    };
+
+    // Load the grant. Anti-enumeration: missing AND not-owner both
+    // surface as 404 to the caller; only the audit row carries the
+    // real reason. Mirrors `revoke_grant`'s precedent.
+    let (subject, resource, granter_id) = match authz.find_grant_full_by_id(grant_id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            tracing::info!(
+                target: "audit",
+                event = "grant.notify_skipped",
+                reason = "grant_not_found",
+                caller_id = %caller_id,
+                grant_id = %grant_id,
+                "🤫 manual notify rejected: grant {} not found",
+                grant_id,
+            );
+            return AppError::not_found(format!("Grant {grant_id} not found")).into_response();
+        }
+        Err(e) => return AppError::from(e).into_response(),
+    };
+
+    if granter_id != caller_id {
+        tracing::info!(
+            target: "audit",
+            event = "grant.notify_skipped",
+            reason = "not_owner",
+            caller_id = %caller_id,
+            grant_id = %grant_id,
+            actual_granter = %granter_id,
+            "🤫 manual notify rejected: caller {} is not the granter of {}",
+            caller_id,
+            grant_id,
+        );
+        return AppError::not_found(format!("Grant {grant_id} not found")).into_response();
+    }
+
+    // Token subjects can't be notified — the link share has no human
+    // recipient to email. Map to 409 so the frontend can hide the menu
+    // item for these as defense-in-depth (the v1 UI already does this
+    // client-side; this is the server-side enforcement).
+    if matches!(subject, Subject::Token(_)) {
+        return AppError::new(
+            StatusCode::CONFLICT,
+            "Cannot notify a link-share recipient — token shares have no email channel",
+            "subject_is_token",
+        )
+        .into_response();
+    }
+
+    // Load the granter entity (we are the granter; needed for the
+    // notification email body's "Alice shared X with you" salutation).
+    let Some(auth_svc) = state.auth_service.as_ref() else {
+        return AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Authentication subsystem not available",
+            "ServiceUnavailable",
+        )
+        .into_response();
+    };
+    let granter = match auth_svc
+        .auth_application_service
+        .get_user_entity(caller_id)
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => return AppError::from(e).into_response(),
+    };
+
+    let Some(svc) = state.recipient_notification_service.as_ref() else {
+        return AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Notification service is not configured on this server \
+             (set OXICLOUD_SMTP_HOST in .env to enable)",
+            "ServiceUnavailable",
+        )
+        .into_response();
+    };
+
+    let outcome_set = match svc
+        .send_share_notification(&granter, subject, resource, NotifyTrigger::ManualResend)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => return AppError::from(e).into_response(),
+    };
+
+    let dto = outcome_set.to_dto();
+
+    // HTTP mapping per the plan:
+    //   - empty outcomes (Token subject — already 409'd above; defense
+    //     in depth) → 409
+    //   - every outcome is Sent → 204 No Content
+    //   - all RateLimited (no Sent) → 429 with the longest Retry-After
+    //   - mixed → 200 with the full body
+    if dto.outcomes.is_empty() {
+        return AppError::new(
+            StatusCode::CONFLICT,
+            "Grant has no notifiable recipients",
+            "subject_is_token",
+        )
+        .into_response();
+    }
+
+    let any_sent = dto.outcomes.iter().any(|o| {
+        matches!(
+            o,
+            crate::application::dtos::grant_dto::NotifyOutcomeDto::Sent { .. }
+        )
+    });
+    let max_retry_after = dto
+        .outcomes
+        .iter()
+        .filter_map(|o| match o {
+            crate::application::dtos::grant_dto::NotifyOutcomeDto::RateLimited {
+                retry_after_secs,
+            } => Some(*retry_after_secs),
+            _ => None,
+        })
+        .max();
+    let all_sent = dto.outcomes.iter().all(|o| {
+        matches!(
+            o,
+            crate::application::dtos::grant_dto::NotifyOutcomeDto::Sent { .. }
+        )
+    });
+
+    if all_sent {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if !any_sent && let Some(secs) = max_retry_after {
+        return crate::interfaces::middleware::rate_limit::too_many_requests(secs as u64);
+    }
+    (StatusCode::OK, Json(dto)).into_response()
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -742,6 +958,7 @@ pub async fn list_my_shares(
                 granted_at: g.granted_at,
                 expires_at: g.expires_at,
                 has_password: g.has_password,
+                is_external: g.is_external,
             })
             .collect();
 

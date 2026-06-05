@@ -20,7 +20,7 @@
             "email": {
                 "invitation": {
                     "subject": "{{inviter}} 在 OxiCloud 上与您共享了一个{{kind}}",
-                    "body": "{{inviter}} 在 OxiCloud 上与您共享了一个{{kind}}。\n\n点击下方链接打开:\n{{link}}\n\n该链接仅可使用一次,并将在 {{ttl_hours}} 小时后过期。\n如果您未预期收到此邀请,可以忽略此消息。\n\n— OxiCloud"
+                    "body": "{{inviter_full}} 在 OxiCloud 上与您共享了一个{{kind}}。\n\n点击下方链接打开:\n{{link}}\n\n该链接仅可使用一次,并将在 {{ttl_hours}} 小时后过期。\n如果您未预期收到此邀请,可以忽略此消息。\n\n— OxiCloud"
                 },
                 "login": {
                     "subject": "登录 OxiCloud",
@@ -29,6 +29,12 @@
                 "kind_file": "文件",
                 "kind_folder": "文件夹",
                 "english_fallback_divider": "--- 以下为英文版本 ---"
+            }
+        },
+        "notification": {
+            "share": {
+                "subject": "{{inviter}} 在 OxiCloud 上与您共享了一个{{kind}}",
+                "body": "{{inviter_full}} 在 OxiCloud 上与您共享了一个{{kind}}。\n\n打开 OxiCloud 查看您的新共享:\n{{login_link}}\n\n您可能还有来自 {{inviter}} 的其他新共享 — 登录以查看所有共享给您的项目。\n\n— OxiCloud\n\n您收到此消息是因为您拥有 OxiCloud 账户且共享通知偏好已开启。您可以在个人资料中关闭它(当有人与我共享时通过电子邮件通知我)。"
             }
         }
     },
@@ -190,7 +196,8 @@
         "shareCopied": "链接已复制到剪贴板",
         "shareCreated": "共享链接创建成功",
         "shareUpdated": "共享设置更新成功",
-        "shareRemoved": "共享已移除"
+        "shareRemoved": "共享已移除",
+        "inviteByEmail": "通过邮件邀请 — 将发送邀请"
     },
     "share_dialogTitle": "共享链接",
     "share_linkLabel": "共享链接：",
@@ -674,7 +681,23 @@
         "migration_verify_passed": "验证通过",
         "migration_verify_failed": "验证失败",
         "migration_failed_blobs": "失败的块",
-        "testing": "正在测试..."
+        "testing": "正在测试...",
+        "smtp_disabled": "已禁用（未设置主机）",
+        "smtp_enabled": "已启用",
+        "smtp_enabled_label": "状态",
+        "smtp_intro": "SMTP 仅通过环境变量（OXICLOUD_SMTP_*）配置。以下值是从运行中的服务器读取的 — 如需修改，请编辑环境变量并重启 OxiCloud。",
+        "smtp_not_configured": "此服务器未配置 SMTP。",
+        "smtp_send_failed": "发送失败。",
+        "smtp_send_test": "发送测试邮件",
+        "smtp_sending": "发送中…",
+        "smtp_sent": "测试邮件已发送。",
+        "smtp_server_code": "服务器回复",
+        "smtp_test_intro": "向下方收件人发送预设的诊断消息，并报告 SMTP 服务器的响应,以便您与中继日志进行核对。",
+        "smtp_test_missing_to": "请输入收件人地址。",
+        "smtp_test_title": "发送测试邮件",
+        "smtp_test_to": "收件人地址",
+        "smtp_title": "出站邮件 (SMTP)",
+        "tab_smtp": "SMTP"
     },
     "profile": {
         "page_title": "个人资料",
@@ -725,6 +748,8 @@
         "username_already_claimed": "用户名已设置,不可更改(DAV/NextCloud 客户端依赖它)。",
         "given_name": "名",
         "family_name": "姓",
+        "notify_on_share": "当有人与我共享时通过电子邮件通知我",
+        "notify_on_share_hint": "取消勾选后，共享项目仍会显示在您的账户中 — 只是不会收到相关邮件通知。",
         "save_profile": "保存更改",
         "profile_saved": "个人资料已更新",
         "profile_no_changes": "无更改可保存。",
@@ -810,7 +835,8 @@
         "size": "大小",
         "favoriteDate": "收藏日期",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "新建"
     },
     "dateBucket": {
         "today": "今天",
@@ -842,5 +868,15 @@
         "delete_confirm_label": "请输入群组名称以确认：",
         "delete_confirm_mismatch": "请准确输入群组名称以确认。",
         "virtual_internal_name": "内部"
+    },
+    "myshares": {
+        "copyLink": "复制链接",
+        "deleteLink": "删除链接",
+        "notifyByEmail": "通过邮件通知",
+        "notifyFailed": "无法发送通知。",
+        "notifyGroupMembers": "通知群组成员",
+        "notifyRateLimited": "对此收件人的通知过多 — 请稍后重试。",
+        "removeAccess": "移除访问权限",
+        "resendInvitation": "重新发送邀请邮件"
     }
 }

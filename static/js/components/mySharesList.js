@@ -9,11 +9,13 @@
  *   'sharedWith' — lane = user | 'links:public' | 'links:password'; row identity = resource
  */
 
+import { getCsrfHeaders } from '../core/csrf.js';
 import { formatExpiryChip } from '../core/formatters.js';
 import { i18n } from '../core/i18n.js';
 import { fileSharing } from '../features/sharing/fileSharing.js';
 import { grants } from '../model/grants.js';
 import { buildExpiryChip } from '../utils/expiryChip.js';
+import { positionMenu } from '../utils/menuPosition.js';
 import { buildPasswordChip } from '../utils/passwordChip.js';
 import { groupDisplayName, groupIconClass } from './groupDisplay.js';
 import { createGroupVignette } from './groupVignette.js';
@@ -432,6 +434,24 @@ class MySharesList {
         const initialExpiry = grant.expires_at ? String(grant.expires_at).slice(0, 10) : null;
 
         if (grant.subject_type === 'user' || grant.subject_type === 'group') {
+            // PR N2 — "Resend invitation email" / "Notify by email" /
+            // "Notify group members". First item in the menu; only
+            // present for user and group subjects (token shares have
+            // no email channel; the server returns 409 anyway).
+            const notifyLabel =
+                grant.subject_type === 'group'
+                    ? i18n.t('myshares.notifyGroupMembers', 'Notify group members')
+                    : grant.is_external
+                      ? i18n.t('myshares.resendInvitation', 'Resend invitation email')
+                      : i18n.t('myshares.notifyByEmail', 'Notify by email');
+            menu.appendChild(
+                this._menuItem('fas fa-paper-plane', notifyLabel, false, async () => {
+                    menu.remove();
+                    await this._notifyRecipient(grant);
+                })
+            );
+            menu.appendChild(this._menuSeparator());
+
             for (const role of /** @type {('admin'|'editor'|'viewer')[]} */ (['admin', 'editor', 'viewer'])) {
                 const isCurrent = grant.role === role;
                 const mi = this._menuItem(isCurrent ? 'fas fa-check' : '', roleLabel(role), false, async () => {
@@ -452,7 +472,7 @@ class MySharesList {
             menu.appendChild(this._menuSeparator());
             menu.appendChild(this._menuExpiryRow(grant, item, rowEl, initialExpiry));
             menu.appendChild(this._menuSeparator());
-            const removeIcon = grant.subject_type === 'group' ? 'fas fa-user-group' : 'fas fa-user-times';
+            const removeIcon = grant.subject_type === 'group' ? 'fas fa-user-group' : 'fas fa-user-xmark';
             menu.appendChild(
                 this._menuItem(removeIcon, i18n.t('myshares.removeAccess', 'Remove access'), true, async () => {
                     menu.remove();
@@ -483,13 +503,11 @@ class MySharesList {
 
         document.body.appendChild(menu);
 
-        // Position below the trigger, right-aligned to it, clamped to viewport
-        const rect = btn.getBoundingClientRect();
-        const mw = menu.offsetWidth || 200;
-        const left = Math.min(rect.right - mw, window.innerWidth - mw - 8);
-        menu.style.position = 'absolute';
-        menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
-        menu.style.left = `${Math.max(8, left)}px`;
+        // Position below the trigger, flipping above (or clamping up)
+        // when the trigger is too close to the bottom of the viewport.
+        // Single source of truth for menu positioning — see
+        // `static/js/utils/menuPosition.js`.
+        positionMenu(menu, { anchor: btn });
 
         const close = (/** @type {Event} */ e) => {
             if (e.type === 'keydown' && /** @type {KeyboardEvent} */ (e).key !== 'Escape') return;
@@ -552,6 +570,68 @@ class MySharesList {
         row.appendChild(chip);
 
         return row;
+    }
+
+    /**
+     * PR N2 — manual share-notification resend. Calls
+     * `POST /api/grants/{grant_id}/notify` and surfaces the aggregated
+     * outcome to the granter. The endpoint returns:
+     *   - 204 No Content      — all recipients sent
+     *   - 200 + NotifyOutcomeSetDto — mixed outcomes (coalesced /
+     *     not-applicable / partial sent)
+     *   - 429 Too Many Requests — per-recipient rate limit hit on every
+     *     recipient
+     *   - 404 Not Found       — caller is not the granter, or grant
+     *     doesn't exist (anti-enumeration; the audit log carries the
+     *     truth)
+     *   - 409 Conflict        — token subject (UI shouldn't reach this)
+     *
+     * @param {OutgoingResourceGrant} grant
+     */
+    async _notifyRecipient(grant) {
+        try {
+            const resp = await fetch(`/api/grants/${encodeURIComponent(grant.grant_id)}/notify`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { ...getCsrfHeaders() }
+            });
+            if (resp.status === 204) {
+                // All sent — silent success.
+                console.log('[myshares] notify: all recipients sent', grant.grant_id);
+                return;
+            }
+            if (resp.status === 429) {
+                // eslint-disable-next-line no-alert -- minimal v1 surface
+                alert(i18n.t('myshares.notifyRateLimited', 'Too many notifications for this recipient — try again later.'));
+                return;
+            }
+            if (resp.ok) {
+                /** @type {{ total_recipients: number, outcomes: Array<{kind: string, detail?: string, reason?: string}> }} */
+                const body = await resp.json();
+                console.log('[myshares] notify outcomes:', body);
+                const sent = body.outcomes.filter((o) => o.kind === 'sent').length;
+                const coalesced = body.outcomes.filter((o) => o.kind === 'coalesced').length;
+                const notApplicable = body.outcomes.filter((o) => o.kind === 'not_applicable').length;
+                /** @type {string[]} */
+                const lines = [];
+                if (sent > 0) lines.push(`${sent} recipient(s) notified by email.`);
+                if (coalesced > 0) lines.push(`${coalesced} recipient(s) already notified recently — they'll see the share at next login.`);
+                if (notApplicable > 0) lines.push(`${notApplicable} recipient(s) skipped (opted out, no email, or operator-disabled).`);
+                if (lines.length > 0) {
+                    // eslint-disable-next-line no-alert -- minimal v1 surface
+                    alert(lines.join('\n'));
+                }
+                return;
+            }
+            // 404 / 409 / unexpected
+            console.error('[myshares] notify failed:', resp.status);
+            // eslint-disable-next-line no-alert -- minimal v1 surface
+            alert(i18n.t('myshares.notifyFailed', 'Could not send notification.'));
+        } catch (err) {
+            console.error('[myshares] notify error:', err);
+            // eslint-disable-next-line no-alert -- minimal v1 surface
+            alert(i18n.t('myshares.notifyFailed', 'Could not send notification.'));
+        }
     }
 
     /**

@@ -948,9 +948,10 @@ impl AppServiceFactory {
                     ),
                 ),
             )),
-            email_sender: None,              // populated below
-            mock_email_sender: None,         // populated below
-            magic_link_invite_service: None, // populated below
+            email_sender: None,                   // populated below
+            mock_email_sender: None,              // populated below
+            magic_link_invite_service: None,      // populated below
+            recipient_notification_service: None, // populated below alongside magic_link_invite_service
             // 60 lookups / minute / caller; cap at 50 000 tracked
             // callers to bound memory. The same limiter instance is
             // shared by every clone of AppState since it lives in an
@@ -1013,9 +1014,9 @@ impl AppServiceFactory {
             );
             app_state.magic_link_invite_service = Some(Arc::new(
                 crate::application::services::magic_link_invite_service::MagicLinkInviteService::new(
-                    invite_user_storage,
+                    invite_user_storage.clone(),
                     invite_magic_link_repo,
-                    email_sender,
+                    email_sender.clone(),
                     lifecycle,
                     app_state.applications.i18n_service.clone(),
                     app_state.locale_registry.clone(),
@@ -1023,6 +1024,30 @@ impl AppServiceFactory {
                     self.config.base_url(),
                 ),
             ));
+
+            // PR N1: wire the unified RecipientNotificationService.
+            // Only constructed when MagicLinkInviteService is also
+            // available — the magic-link path delegates to it.
+            // SubjectGroupService is built earlier in this factory; the
+            // notification service needs it for the Group subject arm.
+            if let (Some(magic_link_svc), Some(subject_groups)) = (
+                app_state.magic_link_invite_service.clone(),
+                app_state.subject_group_service.clone(),
+            ) {
+                app_state.recipient_notification_service = Some(Arc::new(
+                    crate::application::services::recipient_notification_service::RecipientNotificationService::new(
+                        invite_user_storage,
+                        magic_link_svc,
+                        email_sender,
+                        app_state.applications.i18n_service.clone(),
+                        app_state.locale_registry.clone(),
+                        subject_groups,
+                        app_state.magic_link_send_per_email_rate_limiter.clone(),
+                        self.config.magic_link.clone(),
+                        self.config.base_url(),
+                    ),
+                ));
+            }
         }
 
         // 9b. Wire admin settings service when auth is available
@@ -1373,6 +1398,15 @@ pub struct AppState {
     /// returns 503 when this is `None`.
     pub magic_link_invite_service: Option<
         Arc<crate::application::services::magic_link_invite_service::MagicLinkInviteService>,
+    >,
+    /// Unified share-notification dispatcher (PR N1) — used by both
+    /// `create_grant` and the future `POST /api/grants/{id}/notify` to
+    /// route share emails through coalesce + rate-limit + per-recipient
+    /// dispatch. `None` when SMTP / magic-link / subject-group services
+    /// aren't all configured; callers degrade to silent no-op in that
+    /// case (no mail sent, grant still created).
+    pub recipient_notification_service: Option<
+        Arc<crate::application::services::recipient_notification_service::RecipientNotificationService>,
     >,
     /// Per-caller sliding-window limiter for `GET /api/users/{id}`. The
     /// endpoint's primary defense is the visibility check, but a stale

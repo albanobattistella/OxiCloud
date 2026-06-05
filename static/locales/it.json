@@ -20,7 +20,7 @@
             "email": {
                 "invitation": {
                     "subject": "{{inviter}} ha condiviso un {{kind}} con te su OxiCloud",
-                    "body": "{{inviter}} ha condiviso un {{kind}} con te su OxiCloud.\n\nAprilo facendo clic sul link sottostante:\n{{link}}\n\nIl link è monouso e scade tra {{ttl_hours}} ore.\nSe non ti aspettavi questo invito, puoi ignorare questo messaggio.\n\n— OxiCloud"
+                    "body": "{{inviter_full}} ha condiviso un {{kind}} con te su OxiCloud.\n\nAprilo facendo clic sul link sottostante:\n{{link}}\n\nIl link è monouso e scade tra {{ttl_hours}} ore.\nSe non ti aspettavi questo invito, puoi ignorare questo messaggio.\n\n— OxiCloud"
                 },
                 "login": {
                     "subject": "Accedi a OxiCloud",
@@ -29,6 +29,12 @@
                 "kind_file": "file",
                 "kind_folder": "cartella",
                 "english_fallback_divider": "--- Versione inglese qui sotto ---"
+            }
+        },
+        "notification": {
+            "share": {
+                "subject": "{{inviter}} ha condiviso un {{kind}} con te su OxiCloud",
+                "body": "{{inviter_full}} ha condiviso un {{kind}} con te su OxiCloud.\n\nApri OxiCloud per vedere la tua nuova condivisione:\n{{login_link}}\n\nPotresti avere altre nuove condivisioni da {{inviter}} — accedi per vedere tutti gli elementi condivisi con te.\n\n— OxiCloud\n\nRicevi questo messaggio perché hai un account OxiCloud e la preferenza di notifica delle condivisioni è attiva. Puoi disattivarla dal tuo profilo (Avvisami via email quando qualcuno condivide con me)."
             }
         }
     },
@@ -190,7 +196,8 @@
         "shareCopied": "Link copiato negli appunti",
         "shareCreated": "Link di condivisione creato con successo",
         "shareUpdated": "Impostazioni di condivisione aggiornate con successo",
-        "shareRemoved": "Condivisione rimossa con successo"
+        "shareRemoved": "Condivisione rimossa con successo",
+        "inviteByEmail": "Invita via email — verrà inviato un invito"
     },
     "share_dialogTitle": "Link di condivisione",
     "share_linkLabel": "Link di condivisione:",
@@ -691,7 +698,23 @@
         "migration_verify_passed": "Verifica superata",
         "migration_verify_failed": "Verifica fallita",
         "migration_failed_blobs": "Blob falliti",
-        "testing": "Test in corso..."
+        "testing": "Test in corso...",
+        "smtp_disabled": "Disabilitato (host non impostato)",
+        "smtp_enabled": "Abilitato",
+        "smtp_enabled_label": "Stato",
+        "smtp_intro": "SMTP è configurato esclusivamente tramite variabili d'ambiente (OXICLOUD_SMTP_*). I valori sottostanti sono letti dal server in esecuzione — per modificarli, modifica l'ambiente e riavvia OxiCloud.",
+        "smtp_not_configured": "SMTP non è configurato su questo server.",
+        "smtp_send_failed": "Invio non riuscito.",
+        "smtp_send_test": "Invia email di prova",
+        "smtp_sending": "Invio in corso…",
+        "smtp_sent": "Email di prova inviata.",
+        "smtp_server_code": "Risposta del server",
+        "smtp_test_intro": "Invia un messaggio diagnostico predefinito al destinatario indicato sotto e riporta la risposta del server SMTP, così puoi correlarla con i log del tuo relay.",
+        "smtp_test_missing_to": "Inserisci un indirizzo destinatario.",
+        "smtp_test_title": "Invia un'email di prova",
+        "smtp_test_to": "Indirizzo destinatario",
+        "smtp_title": "Email in uscita (SMTP)",
+        "tab_smtp": "SMTP"
     },
     "profile": {
         "page_title": "Profilo",
@@ -742,6 +765,8 @@
         "username_already_claimed": "Nome utente impostato e non modificabile (i client DAV/NextCloud dipendono da esso).",
         "given_name": "Nome",
         "family_name": "Cognome",
+        "notify_on_share": "Avvisami via email quando qualcuno condivide con me",
+        "notify_on_share_hint": "Se deselezionato, le condivisioni continueranno ad apparire nel tuo account — semplicemente non riceverai un'email a riguardo.",
         "save_profile": "Salva modifiche",
         "profile_saved": "Profilo aggiornato",
         "profile_no_changes": "Nessuna modifica da salvare.",
@@ -810,7 +835,8 @@
         "size": "Dimensione",
         "favoriteDate": "Data preferito",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "Nuovo"
     },
     "dateBucket": {
         "today": "Oggi",
@@ -842,5 +868,15 @@
         "delete_confirm_label": "Digita il nome del gruppo per confermare:",
         "delete_confirm_mismatch": "Digita esattamente il nome del gruppo per confermare.",
         "virtual_internal_name": "Interno"
+    },
+    "myshares": {
+        "copyLink": "Copia link",
+        "deleteLink": "Elimina link",
+        "notifyByEmail": "Notifica via email",
+        "notifyFailed": "Impossibile inviare la notifica.",
+        "notifyGroupMembers": "Notifica i membri del gruppo",
+        "notifyRateLimited": "Troppe notifiche per questo destinatario — riprova più tardi.",
+        "removeAccess": "Rimuovi accesso",
+        "resendInvitation": "Reinvia email di invito"
     }
 }

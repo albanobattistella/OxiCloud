@@ -20,7 +20,7 @@
             "email": {
                 "invitation": {
                     "subject": "{{inviter}} udostępnił Ci {{kind}} w OxiCloud",
-                    "body": "{{inviter}} udostępnił Ci {{kind}} w OxiCloud.\n\nOtwórz, klikając poniższy link:\n{{link}}\n\nLink działa raz i wygasa za {{ttl_hours}} godzin.\nJeśli nie spodziewałeś się tego zaproszenia, możesz zignorować tę wiadomość.\n\n— OxiCloud"
+                    "body": "{{inviter_full}} udostępnił Ci {{kind}} w OxiCloud.\n\nOtwórz, klikając poniższy link:\n{{link}}\n\nLink działa raz i wygasa za {{ttl_hours}} godzin.\nJeśli nie spodziewałeś się tego zaproszenia, możesz zignorować tę wiadomość.\n\n— OxiCloud"
                 },
                 "login": {
                     "subject": "Zaloguj się do OxiCloud",
@@ -29,6 +29,12 @@
                 "kind_file": "plik",
                 "kind_folder": "folder",
                 "english_fallback_divider": "--- Wersja angielska poniżej ---"
+            }
+        },
+        "notification": {
+            "share": {
+                "subject": "{{inviter}} udostępnił Ci {{kind}} w OxiCloud",
+                "body": "{{inviter_full}} udostępnił Ci {{kind}} w OxiCloud.\n\nOtwórz OxiCloud, aby zobaczyć nowe udostępnienie:\n{{login_link}}\n\nMożesz mieć dodatkowe nowe udostępnienia od {{inviter}} — zaloguj się, aby zobaczyć wszystkie udostępnione Ci elementy.\n\n— OxiCloud\n\nOtrzymujesz tę wiadomość, ponieważ masz konto OxiCloud i preferencja powiadomień o udostępnieniach jest włączona. Możesz ją wyłączyć w swoim profilu (Wyślij mi e-mail, gdy ktoś coś mi udostępni)."
             }
         }
     },
@@ -190,7 +196,8 @@
         "shareCopied": "Link skopiowany do schowka",
         "shareCreated": "Link udostępniania utworzony pomyślnie",
         "shareUpdated": "Ustawienia udostępniania zaktualizowane pomyślnie",
-        "shareRemoved": "Udostępnienie usunięte pomyślnie"
+        "shareRemoved": "Udostępnienie usunięte pomyślnie",
+        "inviteByEmail": "Zaproś przez e-mail — zaproszenie zostanie wysłane"
     },
     "share_dialogTitle": "Link udostępniania",
     "share_linkLabel": "Link udostępniania:",
@@ -691,7 +698,23 @@
         "migration_verify_passed": "Weryfikacja zaliczona",
         "migration_verify_failed": "Weryfikacja nieudana",
         "migration_failed_blobs": "nieudane bloby",
-        "testing": "Testowanie…"
+        "testing": "Testowanie…",
+        "smtp_disabled": "Wyłączone (host nieustawiony)",
+        "smtp_enabled": "Włączone",
+        "smtp_enabled_label": "Status",
+        "smtp_intro": "SMTP jest konfigurowany wyłącznie przez zmienne środowiskowe (OXICLOUD_SMTP_*). Poniższe wartości są odczytywane z działającego serwera — aby je zmienić, zmodyfikuj środowisko i uruchom ponownie OxiCloud.",
+        "smtp_not_configured": "SMTP nie jest skonfigurowany na tym serwerze.",
+        "smtp_send_failed": "Wysłanie nie powiodło się.",
+        "smtp_send_test": "Wyślij e-mail testowy",
+        "smtp_sending": "Wysyłanie…",
+        "smtp_sent": "E-mail testowy wysłany.",
+        "smtp_server_code": "Odpowiedź serwera",
+        "smtp_test_intro": "Wysyła wstępnie zdefiniowaną wiadomość diagnostyczną do podanego poniżej odbiorcy i raportuje odpowiedź serwera SMTP, abyś mógł skorelować ją z logami swojego przekaźnika.",
+        "smtp_test_missing_to": "Wprowadź adres odbiorcy.",
+        "smtp_test_title": "Wyślij e-mail testowy",
+        "smtp_test_to": "Adres odbiorcy",
+        "smtp_title": "Poczta wychodząca (SMTP)",
+        "tab_smtp": "SMTP"
     },
     "profile": {
         "page_title": "Profil",
@@ -742,6 +765,8 @@
         "username_already_claimed": "Nazwa użytkownika jest ustawiona i nie może być zmieniona (klienty DAV/NextCloud są od niej zależne).",
         "given_name": "Imię",
         "family_name": "Nazwisko",
+        "notify_on_share": "Wyślij mi e-mail, gdy ktoś coś mi udostępni",
+        "notify_on_share_hint": "Gdy odznaczone, udostępnienia nadal pojawiają się na Twoim koncie — po prostu nie otrzymasz o nich e-maila.",
         "save_profile": "Zapisz zmiany",
         "profile_saved": "Profil zaktualizowany",
         "profile_no_changes": "Brak zmian do zapisania.",
@@ -810,7 +835,8 @@
         "size": "Rozmiar",
         "favoriteDate": "Data dodania do ulubionych",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "Nowe"
     },
     "dateBucket": {
         "today": "Dzisiaj",
@@ -842,5 +868,15 @@
         "delete_confirm_label": "Wpisz nazwę grupy, aby potwierdzić:",
         "delete_confirm_mismatch": "Wpisz nazwę grupy dokładnie, aby potwierdzić.",
         "virtual_internal_name": "Wewnętrzni"
+    },
+    "myshares": {
+        "copyLink": "Skopiuj link",
+        "deleteLink": "Usuń link",
+        "notifyByEmail": "Powiadom e-mailem",
+        "notifyFailed": "Nie udało się wysłać powiadomienia.",
+        "notifyGroupMembers": "Powiadom członków grupy",
+        "notifyRateLimited": "Zbyt wiele powiadomień dla tego odbiorcy — spróbuj ponownie później.",
+        "removeAccess": "Usuń dostęp",
+        "resendInvitation": "Wyślij ponownie e-mail z zaproszeniem"
     }
 }

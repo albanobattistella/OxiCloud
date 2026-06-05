@@ -20,7 +20,7 @@
             "email": {
                 "invitation": {
                     "subject": "{{inviter}} a partagé un {{kind}} avec vous sur OxiCloud",
-                    "body": "{{inviter}} a partagé un {{kind}} avec vous sur OxiCloud.\n\nOuvrez-le en cliquant sur le lien ci-dessous :\n{{link}}\n\nLe lien est à usage unique et expire dans {{ttl_hours}} heures.\nSi vous n'attendiez pas cette invitation, vous pouvez ignorer ce message.\n\n— OxiCloud"
+                    "body": "{{inviter_full}} a partagé un {{kind}} avec vous sur OxiCloud.\n\nOuvrez-le en cliquant sur le lien ci-dessous :\n{{link}}\n\nLe lien est à usage unique et expire dans {{ttl_hours}} heures.\nSi vous n'attendiez pas cette invitation, vous pouvez ignorer ce message.\n\n— OxiCloud"
                 },
                 "login": {
                     "subject": "Connexion à OxiCloud",
@@ -29,6 +29,12 @@
                 "kind_file": "fichier",
                 "kind_folder": "dossier",
                 "english_fallback_divider": "--- Version anglaise ci-dessous ---"
+            }
+        },
+        "notification": {
+            "share": {
+                "subject": "{{inviter}} a partagé un {{kind}} avec vous sur OxiCloud",
+                "body": "{{inviter_full}} a partagé un {{kind}} avec vous sur OxiCloud.\n\nOuvrez OxiCloud pour voir votre nouveau partage :\n{{login_link}}\n\nVous avez peut-être d'autres nouveaux partages de {{inviter}} — connectez-vous pour voir tous vos éléments partagés.\n\n— OxiCloud\n\nVous recevez ce message parce que vous avez un compte OxiCloud et que la préférence de notification de partage est activée. Vous pouvez la désactiver dans votre profil (M'avertir par e-mail quand quelqu'un partage avec moi)."
             }
         }
     },
@@ -759,6 +765,8 @@
         "username_already_claimed": "Nom d'utilisateur fixé et non modifiable (les clients DAV/NextCloud en dépendent).",
         "given_name": "Prénom",
         "family_name": "Nom",
+        "notify_on_share": "M'avertir par e-mail quand quelqu'un partage avec moi",
+        "notify_on_share_hint": "Lorsque décoché, les partages apparaissent toujours dans votre compte — vous ne recevrez simplement pas d'e-mail à leur sujet.",
         "save_profile": "Enregistrer",
         "profile_saved": "Profil mis à jour",
         "profile_no_changes": "Aucun changement à enregistrer.",
@@ -827,7 +835,8 @@
         "createdAt": "Date de création",
         "size": "Taille",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "Nouveau"
     },
     "dateBucket": {
         "today": "Aujourd'hui",
@@ -859,5 +868,15 @@
         "delete_confirm_label": "Tapez le nom du groupe pour confirmer :",
         "delete_confirm_mismatch": "Tapez le nom du groupe exactement pour confirmer.",
         "virtual_internal_name": "Interne"
+    },
+    "myshares": {
+        "copyLink": "Copier le lien",
+        "deleteLink": "Supprimer le lien",
+        "notifyByEmail": "Notifier par e-mail",
+        "notifyFailed": "Impossible d'envoyer la notification.",
+        "notifyGroupMembers": "Notifier les membres du groupe",
+        "notifyRateLimited": "Trop de notifications pour ce destinataire — réessayez plus tard.",
+        "removeAccess": "Retirer l'accès",
+        "resendInvitation": "Renvoyer l'e-mail d'invitation"
     }
 }

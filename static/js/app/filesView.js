@@ -366,9 +366,17 @@ async function _loadPage({ isFirstPage = false } = {}) {
 function addItem(item) {
     const component = _ensureComponent();
     if (!component) return;
-    // Reveal the list if the empty-state is showing
-    ui.resetFilesList();
-    component.addItem(item);
+    // Hide the empty-state placeholder if it's currently showing —
+    // creating a folder in an empty directory should reveal the new
+    // row, not display both states side-by-side. (The component will
+    // un-hide `#files-list` itself when the item is inserted.)
+    document.getElementById('files-container-error')?.classList.add('hidden');
+    // Hand the item to the component so it can place it in the right
+    // swimlane (when the current view is grouped) and pulse-highlight
+    // + smooth-scroll it into view. We deliberately do NOT call
+    // `ui.resetFilesList()` here — that wipes the rendered DOM,
+    // defeating the whole point of an optimistic single-item insert.
+    component.addItem(item, { scroll: true, highlight: true });
 }
 
 /**

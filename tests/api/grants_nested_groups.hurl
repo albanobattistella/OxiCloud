@@ -281,11 +281,13 @@ Content-Type: application/json
 }
 
 HTTP 201
+# PR N1: POST /api/grants now wraps results in
+# `CreateGrantResponseDto { grants, notification }`.
 [Asserts]
-jsonpath "$" count == 1
-jsonpath "$[0].permission" == "read"
-jsonpath "$[0].subject.type" == "group"
-jsonpath "$[0].subject.id"   == "{{group_a_id}}"
+jsonpath "$.grants" count == 1
+jsonpath "$.grants[0].permission" == "read"
+jsonpath "$.grants[0].subject.type" == "group"
+jsonpath "$.grants[0].subject.id"   == "{{group_a_id}}"
 
 # ── Read endpoints now succeed ──────────────────────────────
 GET {{base_url}}/api/folders/{{perm_folder_id}}/resources?resource_types=folder

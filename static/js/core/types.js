@@ -166,6 +166,7 @@
  * @property {string} [family_name]   Last/family name; set at OIDC JIT or via PATCH /api/auth/me/profile (PR 24)
  * @property {string} [email_verified_at]  ISO 8601 timestamp of the first proof-of-email-control (PR 23). Omitted when unverified.
  * @property {string} [preferred_locale]    User-chosen locale code (e.g. `"fr"`, `"zh-TW"`); omitted when unset. Round-trips via PATCH /api/auth/me/profile.
+ * @property {boolean} notify_on_share       Whether the user wants share-notification emails ("Alice shared X with you"). Default TRUE. Toggled via the profile checkbox; round-trips via PATCH /api/auth/me/profile.
  */
 
 /**
@@ -365,6 +366,7 @@
  * @property {string}                              granted_at   - ISO-8601
  * @property {string|null}                         [expires_at] - ISO-8601 or absent.
  * @property {boolean}                             has_password - True when a token subject has a password set.
+ * @property {boolean}                             [is_external] - True when a user subject is a magic-link-only external user (PR N2). Drives the My Shares menu label ("Resend invitation email" vs "Notify by email"). Always false for token and group subjects.
  */
 
 /**

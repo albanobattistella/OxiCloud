@@ -318,6 +318,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             .route("/", post(grant_handler::create_grant))
             .route("/", get(grant_handler::list_on_resource))
             .route("/{id}", delete(grant_handler::revoke_grant))
+            .route("/{id}/notify", post(grant_handler::notify_grant_recipient))
             .route("/role", put(grant_handler::set_role))
             .route("/incoming", get(grant_handler::list_incoming))
             .route(

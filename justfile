@@ -74,8 +74,8 @@ db-down:
 front-dev:
     PROFILE=dev cargo run
 
-# front: check all (linter, format, type, ...)
-front-check: front-fmt front-lint front-type front-rules
+# front: check all (linter, format, type, icons, translations...)
+front-check: front-fmt front-lint front-type front-rules front-check-icons front-check-i18n
 
 front-fmt:
     biome format static/
@@ -90,6 +90,13 @@ front-type:
 # check CSS rules
 front-rules:
     stylelint static/css/
+
+front-check-icons:
+    tools/check-icons.py --check-only
+
+front-check-i18n:
+    tools/check-missing-translations.py --check-only
+
 
 # end-to-end Playwright tests
 front-test:

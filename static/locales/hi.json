@@ -20,7 +20,7 @@
             "email": {
                 "invitation": {
                     "subject": "{{inviter}} ने OxiCloud पर आपके साथ एक {{kind}} साझा किया",
-                    "body": "{{inviter}} ने OxiCloud पर आपके साथ एक {{kind}} साझा किया है।\n\nइसे नीचे दिए गए लिंक पर क्लिक करके खोलें:\n{{link}}\n\nलिंक केवल एक बार काम करता है और {{ttl_hours}} घंटों में समाप्त हो जाता है।\nयदि आप इस आमंत्रण की अपेक्षा नहीं कर रहे थे, तो आप इस संदेश को अनदेखा कर सकते हैं।\n\n— OxiCloud"
+                    "body": "{{inviter_full}} ने OxiCloud पर आपके साथ एक {{kind}} साझा किया है।\n\nइसे नीचे दिए गए लिंक पर क्लिक करके खोलें:\n{{link}}\n\nलिंक केवल एक बार काम करता है और {{ttl_hours}} घंटों में समाप्त हो जाता है।\nयदि आप इस आमंत्रण की अपेक्षा नहीं कर रहे थे, तो आप इस संदेश को अनदेखा कर सकते हैं।\n\n— OxiCloud"
                 },
                 "login": {
                     "subject": "OxiCloud में साइन इन करें",
@@ -29,6 +29,12 @@
                 "kind_file": "फ़ाइल",
                 "kind_folder": "फ़ोल्डर",
                 "english_fallback_divider": "--- अंग्रेज़ी संस्करण नीचे ---"
+            }
+        },
+        "notification": {
+            "share": {
+                "subject": "{{inviter}} ने OxiCloud पर आपके साथ एक {{kind}} साझा किया",
+                "body": "{{inviter_full}} ने OxiCloud पर आपके साथ एक {{kind}} साझा किया है।\n\nअपना नया साझाकरण देखने के लिए OxiCloud खोलें:\n{{login_link}}\n\nहो सकता है आपके पास {{inviter}} से और भी नए साझाकरण हों — साइन इन करें और अपने सभी साझा किए गए आइटम देखें।\n\n— OxiCloud\n\nआपको यह संदेश इसलिए मिल रहा है क्योंकि आपका OxiCloud खाता है और साझाकरण-सूचना प्राथमिकता चालू है। आप इसे अपनी प्रोफ़ाइल में बंद कर सकते हैं (जब कोई मेरे साथ साझा करे तो मुझे ईमेल भेजें)।"
             }
         }
     },
@@ -190,7 +196,8 @@
         "shareCopied": "लिंक क्लिपबोर्ड पर कॉपी हुआ",
         "shareCreated": "शेयर लिंक सफलतापूर्वक बनाया गया",
         "shareUpdated": "शेयर सेटिंग्स सफलतापूर्वक अपडेट हुईं",
-        "shareRemoved": "शेयर सफलतापूर्वक हटाया गया"
+        "shareRemoved": "शेयर सफलतापूर्वक हटाया गया",
+        "inviteByEmail": "ईमेल द्वारा आमंत्रित करें — आमंत्रण भेजा जाएगा"
     },
     "share_dialogTitle": "शेयर लिंक",
     "share_linkLabel": "शेयर लिंक:",
@@ -691,7 +698,23 @@
         "migration_verify_passed": "सत्यापन पास",
         "migration_verify_failed": "सत्यापन विफल",
         "migration_failed_blobs": "विफल ब्लॉब्स",
-        "testing": "परीक्षण हो रहा है..."
+        "testing": "परीक्षण हो रहा है...",
+        "smtp_disabled": "अक्षम (होस्ट सेट नहीं)",
+        "smtp_enabled": "सक्षम",
+        "smtp_enabled_label": "स्थिति",
+        "smtp_intro": "SMTP केवल पर्यावरण चर (OXICLOUD_SMTP_*) के माध्यम से कॉन्फ़िगर किया जाता है। नीचे दिए गए मान चल रहे सर्वर से पढ़े जाते हैं — उन्हें बदलने के लिए, पर्यावरण संपादित करें और OxiCloud को पुनः आरंभ करें।",
+        "smtp_not_configured": "इस सर्वर पर SMTP कॉन्फ़िगर नहीं है।",
+        "smtp_send_failed": "भेजना विफल।",
+        "smtp_send_test": "परीक्षण ईमेल भेजें",
+        "smtp_sending": "भेजा जा रहा है…",
+        "smtp_sent": "परीक्षण ईमेल भेजा गया।",
+        "smtp_server_code": "सर्वर का उत्तर",
+        "smtp_test_intro": "नीचे दिए गए प्राप्तकर्ता को एक पूर्व-निर्धारित निदान संदेश भेजता है और SMTP सर्वर का उत्तर रिपोर्ट करता है ताकि आप इसे अपने रिले लॉग्स से मिला सकें।",
+        "smtp_test_missing_to": "प्राप्तकर्ता पता दर्ज करें।",
+        "smtp_test_title": "परीक्षण ईमेल भेजें",
+        "smtp_test_to": "प्राप्तकर्ता का पता",
+        "smtp_title": "जावक ईमेल (SMTP)",
+        "tab_smtp": "SMTP"
     },
     "profile": {
         "page_title": "प्रोफ़ाइल",
@@ -742,6 +765,8 @@
         "username_already_claimed": "उपयोगकर्ता नाम सेट है और बदला नहीं जा सकता (DAV/NextCloud क्लाइंट इस पर निर्भर करते हैं)।",
         "given_name": "प्रथम नाम",
         "family_name": "अंतिम नाम",
+        "notify_on_share": "जब कोई मेरे साथ साझा करे तो मुझे ईमेल भेजें",
+        "notify_on_share_hint": "जब अनचेक किया जाए, तो साझाकरण आपके खाते में दिखाई देते रहेंगे — आपको बस उनके बारे में ईमेल नहीं मिलेगा।",
         "save_profile": "परिवर्तन सहेजें",
         "profile_saved": "प्रोफ़ाइल अद्यतन की गई",
         "profile_no_changes": "सहेजने के लिए कोई परिवर्तन नहीं।",
@@ -810,7 +835,8 @@
         "size": "आकार",
         "favoriteDate": "पसंदीदा की तारीख",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "नया"
     },
     "dateBucket": {
         "today": "आज",
@@ -842,5 +868,15 @@
         "delete_confirm_label": "पुष्टि के लिए समूह का नाम लिखें:",
         "delete_confirm_mismatch": "पुष्टि के लिए समूह का नाम बिल्कुल वैसा ही लिखें।",
         "virtual_internal_name": "आंतरिक"
+    },
+    "myshares": {
+        "copyLink": "लिंक कॉपी करें",
+        "deleteLink": "लिंक हटाएँ",
+        "notifyByEmail": "ईमेल से सूचित करें",
+        "notifyFailed": "सूचना नहीं भेजी जा सकी।",
+        "notifyGroupMembers": "समूह के सदस्यों को सूचित करें",
+        "notifyRateLimited": "इस प्राप्तकर्ता के लिए बहुत अधिक सूचनाएँ — बाद में पुनः प्रयास करें।",
+        "removeAccess": "पहुँच हटाएँ",
+        "resendInvitation": "आमंत्रण ईमेल पुनः भेजें"
     }
 }

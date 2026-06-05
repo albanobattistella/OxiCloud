@@ -97,10 +97,10 @@ impl UserRepository for UserPgRepository {
                             created_at, updated_at, last_login_at, active,
                             oidc_provider, oidc_subject, is_external,
                             given_name, family_name, email_verified_at,
-                            preferred_locale
+                            preferred_locale, notify_on_share
                         ) VALUES (
                             $1, $2, $3, $4, $5::auth.userrole, $6, $7, $8, $9, $10, $11,
-                            $12, $13, $14, $15, $16, $17, $18
+                            $12, $13, $14, $15, $16, $17, $18, $19
                         )
                         RETURNING *
                         "#,
@@ -123,6 +123,7 @@ impl UserRepository for UserPgRepository {
                 .bind(user_clone.family_name())
                 .bind(user_clone.email_verified_at())
                 .bind(user_clone.preferred_locale())
+                .bind(user_clone.notify_on_share())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -147,7 +148,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name, email_verified_at, preferred_locale
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE id = $1
             "#,
@@ -184,6 +185,7 @@ impl UserRepository for UserPgRepository {
             row.get("family_name"),
             row.get("email_verified_at"),
             row.get("preferred_locale"),
+            row.get("notify_on_share"),
         ))
     }
 
@@ -196,7 +198,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name, email_verified_at, preferred_locale
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE username = $1
             "#,
@@ -233,6 +235,7 @@ impl UserRepository for UserPgRepository {
             row.get("family_name"),
             row.get("email_verified_at"),
             row.get("preferred_locale"),
+            row.get("notify_on_share"),
         ))
     }
 
@@ -245,7 +248,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name, email_verified_at, preferred_locale
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE email = $1
             "#,
@@ -282,7 +285,69 @@ impl UserRepository for UserPgRepository {
             row.get("family_name"),
             row.get("email_verified_at"),
             row.get("preferred_locale"),
+            row.get("notify_on_share"),
         ))
+    }
+
+    /// Batch loads users by id in one query (avoids N+1 for group-
+    /// recipient expansion). Missing ids are silently skipped — the
+    /// caller treats absent rows as "no such recipient", same as
+    /// `get_user_by_id` returning `NotFound` for a single lookup.
+    async fn get_users_by_ids(&self, ids: Vec<Uuid>) -> UserRepositoryResult<Vec<User>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, username, email, password_hash, role::text as role_text,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, last_login_at, active,
+                oidc_provider, oidc_subject, image, is_external,
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
+            FROM auth.users
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(&ids)
+        .fetch_all(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let role_str: Option<String> = row.try_get("role_text").unwrap_or(None);
+                let role = match role_str.as_deref() {
+                    Some("admin") => UserRole::Admin,
+                    _ => UserRole::User,
+                };
+
+                User::from_data_full(
+                    row.get("id"),
+                    row.get("username"),
+                    row.get("email"),
+                    row.get("password_hash"),
+                    role,
+                    row.get("storage_quota_bytes"),
+                    row.get("storage_used_bytes"),
+                    row.get("created_at"),
+                    row.get("updated_at"),
+                    row.get("last_login_at"),
+                    row.get("active"),
+                    row.get("oidc_provider"),
+                    row.get("oidc_subject"),
+                    row.get("image"),
+                    row.get("is_external"),
+                    row.get("given_name"),
+                    row.get("family_name"),
+                    row.get("email_verified_at"),
+                    row.get("preferred_locale"),
+                    row.get("notify_on_share"),
+                )
+            })
+            .collect())
     }
 
     /// Updates an existing user using a transaction
@@ -310,7 +375,8 @@ impl UserRepository for UserPgRepository {
                             given_name = $12,
                             family_name = $13,
                             email_verified_at = $14,
-                            preferred_locale = $15
+                            preferred_locale = $15,
+                            notify_on_share = $16
                         WHERE id = $1
                         "#,
                 )
@@ -329,6 +395,7 @@ impl UserRepository for UserPgRepository {
                 .bind(user_clone.family_name())
                 .bind(user_clone.email_verified_at())
                 .bind(user_clone.preferred_locale())
+                .bind(user_clone.notify_on_share())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -401,7 +468,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name, email_verified_at, preferred_locale
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE ($3 OR is_external = FALSE)
             ORDER BY created_at DESC
@@ -445,6 +512,7 @@ impl UserRepository for UserPgRepository {
                     row.get("family_name"),
                     row.get("email_verified_at"),
                     row.get("preferred_locale"),
+                    row.get("notify_on_share"),
                 )
             })
             .collect();
@@ -466,7 +534,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name, email_verified_at, preferred_locale
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE (username ILIKE $1 OR email ILIKE $1)
               AND ($3 OR is_external = FALSE)
@@ -510,6 +578,7 @@ impl UserRepository for UserPgRepository {
                     row.get("family_name"),
                     row.get("email_verified_at"),
                     row.get("preferred_locale"),
+                    row.get("notify_on_share"),
                 )
             })
             .collect();
@@ -597,7 +666,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name, email_verified_at, preferred_locale
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE role::text = $1
             ORDER BY created_at DESC
@@ -638,6 +707,7 @@ impl UserRepository for UserPgRepository {
                     row.get("family_name"),
                     row.get("email_verified_at"),
                     row.get("preferred_locale"),
+                    row.get("notify_on_share"),
                 )
             })
             .collect();
@@ -674,7 +744,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name, email_verified_at, preferred_locale
+                given_name, family_name, email_verified_at, preferred_locale, notify_on_share
             FROM auth.users
             WHERE oidc_provider = $1 AND oidc_subject = $2
             "#,
@@ -711,6 +781,7 @@ impl UserRepository for UserPgRepository {
             row.get("family_name"),
             row.get("email_verified_at"),
             row.get("preferred_locale"),
+            row.get("notify_on_share"),
         ))
     }
 
@@ -788,6 +859,12 @@ impl UserStoragePort for UserPgRepository {
 
     async fn get_user_by_id(&self, id: Uuid) -> Result<User, DomainError> {
         UserRepository::get_user_by_id(self, id)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn get_users_by_ids(&self, ids: Vec<Uuid>) -> Result<Vec<User>, DomainError> {
+        UserRepository::get_users_by_ids(self, ids)
             .await
             .map_err(DomainError::from)
     }

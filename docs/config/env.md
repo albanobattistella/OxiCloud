@@ -216,6 +216,7 @@ Configures the invite-by-email and login-via-email flows. Both require SMTP to b
 | `OXICLOUD_MAGIC_LINK_TTL_HOURS` | `24` | Lifetime of a freshly-minted magic-link token, in hours |
 | `OXICLOUD_ALLOW_EXTERNAL_USERS` | `true` | Kill switch for the whole flow. `false` makes `POST /api/grants` reject `subject.type = "email"` for unknown addresses and `POST /api/auth/magic-link/send` return its uniform stub without issuing a token. |
 | `OXICLOUD_EXTERNAL_EMAIL_DOMAINS` | — | Comma-separated allowlist of email domains accepted when minting a new external user (case-insensitive, exact match on the post-`@` part). Empty = any domain is allowed, subject to `OXICLOUD_ALLOW_EXTERNAL_USERS`. Subdomains must be listed explicitly: `partner.com` does NOT match `eng.partner.com`. Example: `partner-a.com,partner-b.io`. |
+| `OXICLOUD_NOTIFY_INTERNAL_USERS_ON_SHARE` | `true` | Operator-level kill switch for the **plain-notification** email arm — the "Alice shared 'Project Alpha' with you" mail that fires when the recipient is a password user or OIDC user (i.e. not magic-link eligible). `false` suppresses the arm entirely; internal users discover new shares only at next login. A coarser knob than the per-user `auth.users.notify_on_share` column; when this is `false` the user-level opt-in does not matter. External-user magic-link **first-invitations** are unaffected and always send. |
 
 ## Internationalization (server-rendered surfaces)
 

@@ -139,6 +139,13 @@
           <label for="profile-edit-family-name" data-i18n="profile.family_name">Last name</label>
           <input type="text" id="profile-edit-family-name" maxlength="128" autocomplete="family-name">
         </div>
+        <div class="form-group form-group--checkbox">
+          <label for="profile-edit-notify-on-share" class="checkbox-label">
+            <input type="checkbox" id="profile-edit-notify-on-share">
+            <span data-i18n="profile.notify_on_share">Email me when someone shares with me</span>
+          </label>
+          <small data-i18n="profile.notify_on_share_hint">When unchecked, shares still appear in your account — you just won't get an email about them.</small>
+        </div>
         <button type="submit" class="btn btn-primary" id="profile-edit-submit">
           <i class="fas fa-save"></i> <span data-i18n="profile.save_profile">Save changes</span>
         </button>

@@ -1298,6 +1298,17 @@ impl AuthApplicationService {
             }
         }
 
+        // ── Share-notification opt-out (PR N1) ───────────────────
+        // Boolean field; absent → no change. Idempotent — setting the
+        // same value twice is fine but doesn't re-emit an audit row
+        // because `changed` won't pick it up.
+        if let Some(notify) = dto.notify_on_share
+            && notify != user.notify_on_share()
+        {
+            user.set_notify_on_share(notify);
+            changed.push("notify_on_share");
+        }
+
         if changed.is_empty() {
             // No-op — return the current user without a DB write.
             return Ok(UserDto::from(user));
@@ -1318,6 +1329,19 @@ impl AuthApplicationService {
     // Alias for consistency with handler method
     pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
         self.get_user(user_id).await
+    }
+
+    /// Load the full `User` entity for the given id. Unlike
+    /// `get_user_by_id` this returns the domain entity (not a DTO), so
+    /// callers can read fields like `notify_on_share()`,
+    /// `preferred_locale()`, or `is_external()` without round-tripping
+    /// through the DTO shape. Used by `grant_handler::create_grant` to
+    /// hand the granter entity to `RecipientNotificationService`.
+    pub async fn get_user_entity(
+        &self,
+        user_id: Uuid,
+    ) -> Result<crate::domain::entities::user::User, DomainError> {
+        UserStoragePort::get_user_by_id(&*self.user_storage, user_id).await
     }
 
     /// Visibility-checked profile lookup for `GET /api/users/{id}`.

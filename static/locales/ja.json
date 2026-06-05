@@ -20,7 +20,7 @@
             "email": {
                 "invitation": {
                     "subject": "{{inviter}} さんが OxiCloud で {{kind}} をあなたと共有しました",
-                    "body": "{{inviter}} さんが OxiCloud で {{kind}} をあなたと共有しました。\n\n以下のリンクをクリックして開いてください:\n{{link}}\n\nリンクは一度のみ有効で、{{ttl_hours}} 時間で期限切れになります。\nこの招待に心当たりがない場合は、このメッセージを無視していただいて結構です。\n\n— OxiCloud"
+                    "body": "{{inviter_full}} さんが OxiCloud で {{kind}} をあなたと共有しました。\n\n以下のリンクをクリックして開いてください:\n{{link}}\n\nリンクは一度のみ有効で、{{ttl_hours}} 時間で期限切れになります。\nこの招待に心当たりがない場合は、このメッセージを無視していただいて結構です。\n\n— OxiCloud"
                 },
                 "login": {
                     "subject": "OxiCloud にサインイン",
@@ -29,6 +29,12 @@
                 "kind_file": "ファイル",
                 "kind_folder": "フォルダー",
                 "english_fallback_divider": "--- 以下は英語版 ---"
+            }
+        },
+        "notification": {
+            "share": {
+                "subject": "{{inviter}} さんが OxiCloud で {{kind}} をあなたと共有しました",
+                "body": "{{inviter_full}} さんが OxiCloud で {{kind}} をあなたと共有しました。\n\n新しい共有を確認するには OxiCloud を開いてください:\n{{login_link}}\n\n{{inviter}} さんから他にも新しい共有があるかもしれません — サインインしてあなたと共有されたすべての項目を確認してください。\n\n— OxiCloud\n\nOxiCloud のアカウントをお持ちで、共有通知の設定が有効になっているため、このメッセージが届いています。プロフィールでオフにできます(誰かが共有したときにメールで通知する)。"
             }
         }
     },
@@ -190,7 +196,8 @@
         "shareCopied": "リンクがクリップボードにコピーされました",
         "shareCreated": "共有リンクが正常に作成されました",
         "shareUpdated": "共有設定が正常に更新されました",
-        "shareRemoved": "共有が正常に削除されました"
+        "shareRemoved": "共有が正常に削除されました",
+        "inviteByEmail": "メールで招待 — 招待を送信します"
     },
     "share_dialogTitle": "共有リンク",
     "share_linkLabel": "共有リンク:",
@@ -691,7 +698,23 @@
         "migration_verify_passed": "検証に合格",
         "migration_verify_failed": "検証に失敗",
         "migration_failed_blobs": "失敗したブロブ",
-        "testing": "テスト中..."
+        "testing": "テスト中...",
+        "smtp_disabled": "無効 (ホスト未設定)",
+        "smtp_enabled": "有効",
+        "smtp_enabled_label": "ステータス",
+        "smtp_intro": "SMTP は環境変数 (OXICLOUD_SMTP_*) でのみ設定します。以下の値は稼働中のサーバーから読み取られます — 変更するには環境を編集して OxiCloud を再起動してください。",
+        "smtp_not_configured": "このサーバーでは SMTP が設定されていません。",
+        "smtp_send_failed": "送信に失敗しました。",
+        "smtp_send_test": "テストメールを送信",
+        "smtp_sending": "送信中…",
+        "smtp_sent": "テストメールを送信しました。",
+        "smtp_server_code": "サーバーの応答",
+        "smtp_test_intro": "あらかじめ定義された診断メッセージを下記の宛先に送信し、SMTP サーバーの応答を表示します。これを使ってリレーのログと突き合わせて確認できます。",
+        "smtp_test_missing_to": "宛先アドレスを入力してください。",
+        "smtp_test_title": "テストメールを送信",
+        "smtp_test_to": "宛先アドレス",
+        "smtp_title": "送信メール (SMTP)",
+        "tab_smtp": "SMTP"
     },
     "profile": {
         "page_title": "プロフィール",
@@ -742,6 +765,8 @@
         "username_already_claimed": "ユーザー名は設定済みで変更できません(DAV/NextCloudクライアントが依存します)。",
         "given_name": "名",
         "family_name": "姓",
+        "notify_on_share": "誰かが共有したときにメールで通知する",
+        "notify_on_share_hint": "チェックを外しても、共有はアカウントに表示されますが、メールでの通知は届きません。",
         "save_profile": "変更を保存",
         "profile_saved": "プロフィールを更新しました",
         "profile_no_changes": "保存する変更はありません。",
@@ -810,7 +835,8 @@
         "size": "サイズ",
         "favoriteDate": "お気に入り登録日",
         "byFiles": "By files",
-        "sharedWith": "Shared with"
+        "sharedWith": "Shared with",
+        "justAdded": "新規"
     },
     "dateBucket": {
         "today": "今日",
@@ -842,5 +868,15 @@
         "delete_confirm_label": "確認のためにグループ名を入力してください:",
         "delete_confirm_mismatch": "確認のためにグループ名を正確に入力してください。",
         "virtual_internal_name": "内部"
+    },
+    "myshares": {
+        "copyLink": "リンクをコピー",
+        "deleteLink": "リンクを削除",
+        "notifyByEmail": "メールで通知",
+        "notifyFailed": "通知を送信できませんでした。",
+        "notifyGroupMembers": "グループメンバーに通知",
+        "notifyRateLimited": "この受信者への通知が多すぎます — しばらくしてから再試行してください。",
+        "removeAccess": "アクセスを削除",
+        "resendInvitation": "招待メールを再送信"
     }
 }
