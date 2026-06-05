@@ -14,6 +14,7 @@ import { fileOps } from '../features/files/fileOperations.js';
 import { inlineViewer } from '../features/files/inlineViewer.js';
 import { wopiEditor } from '../features/files/wopiEditor.js';
 import { recent } from '../features/library/recent.js';
+import { positionMenu } from '../utils/menuPosition.js';
 import { loadFiles } from './filesView.js';
 import { updateHistory } from './main.js';
 import { activateFilesUI, switchToFilesSection, syncViewContainers } from './navigation.js';
@@ -915,33 +916,24 @@ const ui = {
      */
     showContextMenuForItem(item, e) {
         const trigger = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest('.file-actions'));
+        const menuId = 'mime_type' in item ? 'file-context-menu' : 'folder-context-menu';
         if ('mime_type' in item) {
             app.contextMenuTargetFile = /** @type {FileItem} */ (item);
-            if (trigger) {
-                showContextMenuAtElement(trigger, 'file-context-menu');
-            } else {
-                const menu = document.getElementById('file-context-menu');
-                if (menu) {
-                    menu.style.left = `${e.pageX}px`;
-                    menu.style.top = `${e.pageY}px`;
-                    contextMenus.sync();
-                    menu.classList.remove('hidden');
-                }
-            }
         } else {
             app.contextMenuTargetFolder = /** @type {FolderItem} */ (item);
-            if (trigger) {
-                showContextMenuAtElement(trigger, 'folder-context-menu');
-            } else {
-                const menu = document.getElementById('folder-context-menu');
-                if (menu) {
-                    menu.style.left = `${e.pageX}px`;
-                    menu.style.top = `${e.pageY}px`;
-                    contextMenus.sync();
-                    menu.classList.remove('hidden');
-                }
-            }
         }
+
+        if (trigger) {
+            showContextMenuAtElement(trigger, menuId);
+            return;
+        }
+        // Right-click on the row body with no kebab in scope — open at
+        // the cursor. positionMenu() clamps into the viewport, so menus
+        // near the bottom of the screen no longer overflow off-screen.
+        const menu = /** @type {HTMLElement | null} */ (document.getElementById(menuId));
+        if (!menu) return;
+        contextMenus.sync();
+        positionMenu(menu, { x: e.pageX, y: e.pageY });
     },
 
     /**
@@ -1083,27 +1075,11 @@ function showContextMenuAtElement(triggerElement, menuId) {
         m.classList.add('hidden');
     });
 
-    const menu = document.getElementById(menuId);
+    const menu = /** @type {HTMLElement | null} */ (document.getElementById(menuId));
     if (!menu) return;
 
-    const rect = triggerElement.getBoundingClientRect();
-    const menuWidth = 200; // approximate
-
-    // Position below the trigger, aligned to the right edge
-    let left = rect.right - menuWidth + window.scrollX;
-    let top = rect.bottom + 4 + window.scrollY;
-
-    // Keep inside viewport
-    if (left < 8) left = 8;
-    if (top + 300 > window.innerHeight + window.scrollY) {
-        top = rect.top - 4 + window.scrollY; // flip above if no room
-    }
-
     contextMenus.sync();
-
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-    menu.classList.remove('hidden');
+    positionMenu(menu, { anchor: triggerElement });
 }
 
 /**

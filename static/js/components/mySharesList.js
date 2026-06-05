@@ -15,6 +15,7 @@ import { i18n } from '../core/i18n.js';
 import { fileSharing } from '../features/sharing/fileSharing.js';
 import { grants } from '../model/grants.js';
 import { buildExpiryChip } from '../utils/expiryChip.js';
+import { positionMenu } from '../utils/menuPosition.js';
 import { buildPasswordChip } from '../utils/passwordChip.js';
 import { groupDisplayName, groupIconClass } from './groupDisplay.js';
 import { createGroupVignette } from './groupVignette.js';
@@ -502,13 +503,11 @@ class MySharesList {
 
         document.body.appendChild(menu);
 
-        // Position below the trigger, right-aligned to it, clamped to viewport
-        const rect = btn.getBoundingClientRect();
-        const mw = menu.offsetWidth || 200;
-        const left = Math.min(rect.right - mw, window.innerWidth - mw - 8);
-        menu.style.position = 'absolute';
-        menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
-        menu.style.left = `${Math.max(8, left)}px`;
+        // Position below the trigger, flipping above (or clamping up)
+        // when the trigger is too close to the bottom of the viewport.
+        // Single source of truth for menu positioning — see
+        // `static/js/utils/menuPosition.js`.
+        positionMenu(menu, { anchor: btn });
 
         const close = (/** @type {Event} */ e) => {
             if (e.type === 'keydown' && /** @type {KeyboardEvent} */ (e).key !== 'Escape') return;
