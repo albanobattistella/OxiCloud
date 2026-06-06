@@ -217,6 +217,11 @@ pub struct StorageConfig {
     /// memory limit and can trigger OOMKill on large files). Env:
     /// `OXICLOUD_UPLOAD_TMPDIR`.
     pub upload_temp_dir: Option<PathBuf>,
+    /// Interval (seconds) of the background sweep that reconciles every user's
+    /// cached `storage_used_bytes` with the real sum of their files. Keeps the
+    /// quota fresh for all mutations without recomputing on the request path.
+    /// Default: 600 (10 min). Env: `OXICLOUD_STORAGE_USAGE_RECONCILE_SECS`.
+    pub usage_reconcile_secs: u64,
     /// Which blob storage backend to use (`local`, `s3`, or `azure`).
     pub backend: StorageBackendType,
     /// S3-compatible backend configuration (used when `backend == S3`).
@@ -355,6 +360,7 @@ impl Default for StorageConfig {
             trash_retention_days: 30,              // 30 days
             max_upload_size: MAX_UPLOAD_SIZE,
             upload_temp_dir: None,
+            usage_reconcile_secs: 600, // 10 minutes
             backend: StorageBackendType::Local,
             s3: None,
             azure: None,
@@ -1225,6 +1231,14 @@ impl AppConfig {
             && !dir.trim().is_empty()
         {
             config.storage.upload_temp_dir = Some(PathBuf::from(dir.trim()));
+        }
+
+        // Background storage-usage reconciliation interval
+        if let Ok(secs) =
+            env::var("OXICLOUD_STORAGE_USAGE_RECONCILE_SECS").map(|v| v.parse::<u64>())
+            && let Ok(val) = secs
+        {
+            config.storage.usage_reconcile_secs = val;
         }
 
         // Storage backend selection
