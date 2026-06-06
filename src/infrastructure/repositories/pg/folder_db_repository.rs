@@ -1151,6 +1151,7 @@ impl FolderDbRepository {
                 f.created_at,
                 f.updated_at              AS modified_at,
                 f.user_id,
+                NULL::text                AS blob_hash,
                 LOWER(f.name)             AS sort_str,
                 0::bigint                 AS type_order,
                 0::int                    AS folder_first
@@ -1169,6 +1170,7 @@ impl FolderDbRepository {
                 fm.created_at,
                 fm.updated_at             AS modified_at,
                 fm.user_id,
+                fm.blob_hash,
                 LOWER(fm.name)            AS sort_str,
                 fm.category_order::bigint AS type_order,
                 1::int                    AS folder_first
@@ -1292,7 +1294,7 @@ impl FolderDbRepository {
         let sql = format!(
             "WITH resources AS ({cte_inner}) \
              SELECT resource_type, id, name, folder_id, mime_type, size, \
-                    created_at, modified_at, user_id, sort_str, type_order, folder_first \
+                    created_at, modified_at, user_id, blob_hash, sort_str, type_order, folder_first \
              FROM resources \
              {where_clause} \
              {order_clause} \
@@ -1300,7 +1302,8 @@ impl FolderDbRepository {
         );
 
         // Row: (resource_type, id, name, folder_id, mime_type, size,
-        //        created_at, modified_at, user_id, sort_str, type_order, folder_first)
+        //        created_at, modified_at, user_id, blob_hash,
+        //        sort_str, type_order, folder_first)
         type Row = (
             String,
             Uuid,
@@ -1311,6 +1314,7 @@ impl FolderDbRepository {
             chrono::DateTime<chrono::Utc>,
             chrono::DateTime<chrono::Utc>,
             Uuid,
+            Option<String>,
             String,
             i64,
             i32,
@@ -1341,9 +1345,10 @@ impl FolderDbRepository {
                 created_at: r.6,
                 modified_at: r.7,
                 owner_id: r.8,
-                sort_str: r.9,
-                type_order: r.10,
-                folder_first: r.11,
+                blob_hash: r.9,
+                sort_str: r.10,
+                type_order: r.11,
+                folder_first: r.12,
             })
             .collect())
     }

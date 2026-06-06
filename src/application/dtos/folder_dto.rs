@@ -181,6 +181,11 @@ pub struct FolderResourceRow {
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
     pub owner_id: Uuid,
+    /// Raw BLAKE3 content hash. `Some(_)` for file rows, `None` for
+    /// folder rows. Populates `FileDto::content_hash` + `FileDto::etag`
+    /// on the REST `/api/folders/{id}/resources` listing so API
+    /// consumers can issue conditional requests against listed files.
+    pub blob_hash: Option<String>,
     // Pre-computed sort fields — returned by the SQL for cursor construction.
     /// `LOWER(name)` used by `name`/`type` sorts.
     pub sort_str: String,

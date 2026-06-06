@@ -239,6 +239,19 @@ impl Folder {
     /// Opaque HTTP ETag string (raw, NOT HTTP-quoted). Handlers wrap
     /// in `"…"` themselves at the HTTP boundary.
     ///
+    /// Thin instance-method wrapper around [`Folder::compute_etag`]
+    /// — see that function for the formula and the rationale.
+    /// Raw-row listings (favorites, trash, recents, search) call
+    /// the static form so the same formula governs every code path.
+    pub fn etag(&self) -> String {
+        Self::compute_etag(&self.id, self.tree_modified_at)
+    }
+
+    /// Pure formula for the folder ETag, exposed as a static method
+    /// so callers that don't have a fully-constructed `Folder` (raw
+    /// SQL rows in listing handlers, search results, etc.) route
+    /// through the same definition.
+    ///
     /// **Formula**: `{id[..16]}-{tree_modified_at}`.
     ///
     /// - The 16-char UUID prefix gives the folder its identity
@@ -257,9 +270,9 @@ impl Folder {
     ///   trigger does bump `tree_modified_at` on rename via the
     ///   folder-side trigger, so the etag still changes — which is
     ///   correct, the parent collection's listing changed.
-    pub fn etag(&self) -> String {
-        let prefix: String = self.id.chars().take(16).collect();
-        format!("{}-{}", prefix, self.tree_modified_at)
+    pub fn compute_etag(id: &str, tree_modified_at: u64) -> String {
+        let prefix: String = id.chars().take(16).collect();
+        format!("{}-{}", prefix, tree_modified_at)
     }
 
     /// Creates a new Folder instance from a DTO

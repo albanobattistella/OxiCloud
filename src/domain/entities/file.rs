@@ -269,6 +269,21 @@ impl File {
     /// Opaque HTTP ETag string (raw, NOT HTTP-quoted). Handlers wrap
     /// in `"…"` themselves at the HTTP boundary.
     ///
+    /// This is a thin instance-method wrapper around
+    /// [`File::compute_etag`] — see that function for the full
+    /// formula, rationale, and the "single source of truth"
+    /// guarantee that lets raw-row listings (`/api/folders/{id}/resources`,
+    /// favorites, trash, recents, REPORT/SEARCH) compute the same
+    /// value without constructing a full `File` entity.
+    pub fn etag(&self) -> String {
+        Self::compute_etag(&self.blob_hash, self.modified_at)
+    }
+
+    /// Pure formula for the file ETag, exposed as a static method so
+    /// listing handlers that operate on raw SQL rows (rather than
+    /// fully-constructed `File` entities) route through the same
+    /// definition.
+    ///
     /// **Formula**: `{blob_hash[..16]}-{modified_at}`.
     ///
     /// - The 16-char BLAKE3 prefix is the content identity (64 bits
@@ -280,19 +295,19 @@ impl File {
     ///   and clients would serve stale metadata.
     /// - When `blob_hash` is shorter than 16 chars (test fixtures,
     ///   stub entities) the prefix is just the whole value.
-    /// - Folder ETags follow a separate path — see
-    ///   [`crate::domain::entities::folder::Folder::etag`].
+    /// - Folder ETags follow a separate formula — see
+    ///   [`crate::domain::entities::folder::Folder::compute_etag`].
     ///
-    /// Every handler that emits a file ETag header MUST route
-    /// through this method (or the matching [`FileDto::etag`] field
-    /// populated from it) so `GET`, `HEAD`, `PROPFIND`, `PUT`
-    /// response, and `MOVE` all return byte-identical values for
-    /// the same file. The raw blob hash remains accessible via
-    /// [`File::content_hash`] for API consumers that need the
-    /// pre-derivation value.
-    pub fn etag(&self) -> String {
-        let prefix: String = self.blob_hash.chars().take(16).collect();
-        format!("{}-{}", prefix, self.modified_at)
+    /// Every handler that emits a file ETag header MUST go through
+    /// this function (directly or via [`File::etag`] /
+    /// `FileDto::etag`) so `GET`, `HEAD`, `PROPFIND`, `PUT`
+    /// response, `MOVE`, and every JSON listing return
+    /// byte-identical values for the same file. Changing the
+    /// formula here changes it everywhere — that is the property
+    /// we want.
+    pub fn compute_etag(blob_hash: &str, modified_at: u64) -> String {
+        let prefix: String = blob_hash.chars().take(16).collect();
+        format!("{}-{}", prefix, modified_at)
     }
 
     // Getters
