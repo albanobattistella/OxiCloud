@@ -14,10 +14,11 @@ use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
 /// Dispatch Nextcloud chunked upload WebDAV requests.
 ///
 /// Routes:
-///   MKCOL  /remote.php/dav/uploads/{user}/{upload_id}             → create session
-///   PUT    /remote.php/dav/uploads/{user}/{upload_id}/{chunk}      → store chunk
-///   MOVE   /remote.php/dav/uploads/{user}/{upload_id}/.file        → assemble
-///   DELETE /remote.php/dav/uploads/{user}/{upload_id}              → abort
+///   MKCOL    /remote.php/dav/uploads/{user}/{upload_id}             → create session
+///   PUT      /remote.php/dav/uploads/{user}/{upload_id}/{chunk}     → store chunk
+///   MOVE     /remote.php/dav/uploads/{user}/{upload_id}/.file       → assemble
+///   DELETE   /remote.php/dav/uploads/{user}/{upload_id}             → abort
+///   PROPFIND /remote.php/dav/uploads/{user}/{upload_id}             → list chunks (for resume)
 pub async fn handle_nc_uploads(
     state: Arc<AppState>,
     req: Request<Body>,
@@ -31,11 +32,113 @@ pub async fn handle_nc_uploads(
         "PUT" => handle_put_chunk(state, req, &user, &upload_id, &rest).await,
         "MOVE" => handle_assemble(state, req, &user, &upload_id).await,
         "DELETE" => handle_abort(state, &user, &upload_id).await,
+        "PROPFIND" => handle_propfind_session(state, &user, &upload_id).await,
         _ => Ok(Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
             .body(Body::empty())
             .unwrap()),
     }
+}
+
+/// PROPFIND on an upload session — used by the NextCloud Android
+/// client (and several mobile clients) to enumerate which chunks
+/// are already uploaded before resuming an interrupted transfer.
+/// Without this handler the client gets `405 METHOD_NOT_ALLOWED`
+/// and falls back to either failing the upload or starting from
+/// scratch — neither is acceptable on cellular / flaky links where
+/// resume is the whole point of chunked upload.
+///
+/// Response shape: 207 Multi-Status with one `<d:response>` for the
+/// session collection itself and one per chunk file. Properties
+/// returned are the minimum the NC client reads: `resourcetype`,
+/// `getcontentlength` (chunks only), and `getlastmodified` (so
+/// clients can detect stale partial uploads). Depth is ignored —
+/// we always return one level (the session + its direct chunks),
+/// which matches NC server behaviour.
+async fn handle_propfind_session(
+    state: Arc<AppState>,
+    user: &CurrentUser,
+    upload_id: &str,
+) -> Result<Response<Body>, AppError> {
+    let nc = state
+        .nextcloud
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Nextcloud services unavailable"))?;
+
+    let listing = nc
+        .chunked_uploads
+        .list_chunks(&user.username, upload_id)
+        .await
+        .map_err(|e| AppError::internal_error(format!("Failed to list chunks: {}", e)))?
+        .ok_or_else(|| AppError::not_found("Upload session not found"))?;
+
+    let session_href = format!("/remote.php/dav/uploads/{}/{}/", user.username, upload_id);
+    let session_last_modified =
+        chrono::DateTime::<chrono::Utc>::from_timestamp(listing.session_mtime as i64, 0)
+            .unwrap_or_else(chrono::Utc::now)
+            .to_rfc2822();
+
+    let mut body = String::new();
+    body.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
+    body.push_str(r#"<d:multistatus xmlns:d="DAV:">"#);
+
+    // Session collection itself.
+    body.push_str("<d:response>");
+    body.push_str(&format!("<d:href>{}</d:href>", xml_escape(&session_href)));
+    body.push_str("<d:propstat><d:prop>");
+    body.push_str("<d:resourcetype><d:collection/></d:resourcetype>");
+    body.push_str(&format!(
+        "<d:getlastmodified>{}</d:getlastmodified>",
+        xml_escape(&session_last_modified)
+    ));
+    body.push_str("</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>");
+    body.push_str("</d:response>");
+
+    // One entry per chunk file.
+    for chunk in &listing.chunks {
+        let chunk_href = format!(
+            "/remote.php/dav/uploads/{}/{}/{}",
+            user.username, upload_id, chunk.name
+        );
+        let chunk_modified = chrono::DateTime::<chrono::Utc>::from_timestamp(chunk.mtime as i64, 0)
+            .unwrap_or_else(chrono::Utc::now)
+            .to_rfc2822();
+
+        body.push_str("<d:response>");
+        body.push_str(&format!("<d:href>{}</d:href>", xml_escape(&chunk_href)));
+        body.push_str("<d:propstat><d:prop>");
+        body.push_str("<d:resourcetype/>");
+        body.push_str(&format!(
+            "<d:getcontentlength>{}</d:getcontentlength>",
+            chunk.size
+        ));
+        body.push_str(&format!(
+            "<d:getlastmodified>{}</d:getlastmodified>",
+            xml_escape(&chunk_modified)
+        ));
+        body.push_str("</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>");
+        body.push_str("</d:response>");
+    }
+
+    body.push_str("</d:multistatus>");
+
+    Ok(Response::builder()
+        .status(StatusCode::MULTI_STATUS)
+        .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+        .body(Body::from(body))
+        .unwrap())
+}
+
+/// Minimal XML escape — every value we inject above is either a
+/// well-formed RFC 2822 date, a number, or a path segment we
+/// control, but defense-in-depth keeps the response well-formed
+/// even if a chunk name ever contained an unexpected character.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// MKCOL — create upload session directory.

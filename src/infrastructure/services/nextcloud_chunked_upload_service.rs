@@ -139,6 +139,92 @@ impl NextcloudChunkedUploadService {
             .map(|p| p.exists())
             .unwrap_or(false)
     }
+
+    /// Enumerate the chunks already stored in a session, plus the
+    /// session directory's own mtime. Used by the PROPFIND handler
+    /// to drive NextCloud's resume-upload flow — the Android client
+    /// (and several mobile clients) issue PROPFIND on the session
+    /// URL to discover which chunks are already uploaded, then only
+    /// PUT the missing ones.
+    ///
+    /// Returns `None` when the session directory doesn't exist
+    /// (handler maps to 404). The `.file` and `.assembled` markers
+    /// are filtered out — they're internal bookkeeping, not real
+    /// chunks the client uploaded.
+    pub async fn list_chunks(&self, user: &str, upload_id: &str) -> Result<Option<SessionListing>> {
+        let session_dir = self.safe_session_dir(user, upload_id)?;
+        if !session_dir.exists() {
+            return Ok(None);
+        }
+
+        let session_meta = fs::metadata(&session_dir)
+            .await
+            .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
+        let session_mtime = session_meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut chunks: Vec<ChunkInfo> = Vec::new();
+        let mut dir = fs::read_dir(&session_dir)
+            .await
+            .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
+        while let Some(entry) = dir
+            .next_entry()
+            .await
+            .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Filter internal markers — `.file` is the NC-protocol
+            // assembly trigger target (it never reaches the disk
+            // because MOVE redirects it), `.assembled` is our own
+            // staging file from `assemble()`. Surfacing either to
+            // the client would confuse its chunk-count check.
+            if name == ".file" || name == ".assembled" {
+                continue;
+            }
+            let meta = entry
+                .metadata()
+                .await
+                .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
+            let size = meta.len();
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            chunks.push(ChunkInfo { name, size, mtime });
+        }
+        // Sort by chunk name so PROPFIND output is deterministic
+        // (clients don't strictly require this, but reproducible
+        // listings make debugging from logs much easier).
+        chunks.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(Some(SessionListing {
+            session_mtime,
+            chunks,
+        }))
+    }
+}
+
+/// One chunk file inside an upload session.
+#[derive(Debug, Clone)]
+pub struct ChunkInfo {
+    pub name: String,
+    pub size: u64,
+    pub mtime: u64,
+}
+
+/// What `list_chunks` returns: the session's own mtime (for the
+/// collection's `<d:getlastmodified>`) plus the list of stored
+/// chunks.
+#[derive(Debug, Clone)]
+pub struct SessionListing {
+    pub session_mtime: u64,
+    pub chunks: Vec<ChunkInfo>,
 }
 
 #[cfg(test)]
