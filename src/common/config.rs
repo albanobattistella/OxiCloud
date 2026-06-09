@@ -224,6 +224,15 @@ pub struct StorageConfig {
     /// memory limit and can trigger OOMKill on large files). Env:
     /// `OXICLOUD_UPLOAD_TMPDIR`.
     pub upload_temp_dir: Option<PathBuf>,
+    /// Root directory for chunked-upload sessions. When `Some`, chunks land
+    /// under `{chunk_dir}/{upload_id}/` (REST) and
+    /// `{chunk_dir}/nextcloud/{user}/{upload_id}/` (NC). When `None`, falls
+    /// back to `{root_dir}/.uploads/`. Pointing this at the **same
+    /// filesystem** as `.blobs/` keeps the final assembled-to-blob promotion
+    /// an atomic `rename(2)` rather than a full cross-FS copy; pointing it
+    /// at fast storage (NVMe) accelerates the chunk-write + assembly loop
+    /// independently of where final blobs live. Env: `OXICLOUD_CHUNK_DIR`.
+    pub chunk_dir: Option<PathBuf>,
     /// Interval (seconds) of the background sweep that reconciles every user's
     /// cached `storage_used_bytes` with the real sum of their files. Keeps the
     /// quota fresh for all mutations without recomputing on the request path.
@@ -368,6 +377,7 @@ impl Default for StorageConfig {
             max_upload_size: MAX_UPLOAD_SIZE,
             chunk_max_bytes: 100 * 1024 * 1024, // 100 MB — sane upper bound for a single chunked-upload PUT
             upload_temp_dir: None,
+            chunk_dir: None,
             usage_reconcile_secs: 600, // 10 minutes
             backend: StorageBackendType::Local,
             s3: None,
@@ -1244,6 +1254,16 @@ impl AppConfig {
             && !dir.trim().is_empty()
         {
             config.storage.upload_temp_dir = Some(PathBuf::from(dir.trim()));
+        }
+        // Chunked-upload session root — separate from the PUT spool because
+        // chunked sessions accumulate disk on long uploads (multi-chunk
+        // resumable transfers) while PUT spool is short-lived. Sysadmins
+        // commonly want one of them on fast/local storage (NVMe) and the
+        // other on bulk storage; this knob lets that be expressed.
+        if let Ok(dir) = env::var("OXICLOUD_CHUNK_DIR")
+            && !dir.trim().is_empty()
+        {
+            config.storage.chunk_dir = Some(PathBuf::from(dir.trim()));
         }
 
         // Background storage-usage reconciliation interval

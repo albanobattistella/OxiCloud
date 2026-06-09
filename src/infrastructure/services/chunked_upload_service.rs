@@ -44,9 +44,31 @@ pub const MAX_PARALLEL_CHUNKS: usize = 6;
 /// Upload session expiration time (24 h)
 const SESSION_EXPIRATION: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Prefix every session directory name with this string so the cleanup
+/// loop can be safely co-located with unrelated writers (PUT spool
+/// tempfiles, the NC chunked subtree, anything else a sysadmin places
+/// under the same `OXICLOUD_CHUNK_DIR`). The orphan-cleanup scan
+/// filters by this prefix, so non-OxiCloud directories sharing the
+/// root are never touched.
+const SESSION_DIR_PREFIX: &str = "oxi-chunk-";
+
 /// Sentinel file names inside each session directory
 const SESSION_META_FILE: &str = "session.json";
 const PROGRESS_FILE: &str = "progress.bin";
+
+/// Build a session directory name from an upload_id by attaching the
+/// well-known prefix. Symmetric with [`strip_session_prefix`].
+fn session_dir_name(upload_id: &str) -> String {
+    format!("{}{}", SESSION_DIR_PREFIX, upload_id)
+}
+
+/// Extract the upload_id from a session directory name. Returns
+/// `None` when the directory wasn't created by this service (no
+/// `oxi-chunk-` prefix) — the recovery and cleanup paths use this to
+/// skip foreign directories cohabiting under `OXICLOUD_CHUNK_DIR`.
+fn strip_session_prefix(dir_name: &str) -> Option<&str> {
+    dir_name.strip_prefix(SESSION_DIR_PREFIX)
+}
 
 // ─── Serialisable types ──────────────────────────────────────────────────────
 
@@ -252,6 +274,17 @@ impl ChunkedUploadService {
             if !dir.is_dir() {
                 continue;
             }
+            // Only consider directories WE created — anything without the
+            // `oxi-chunk-` prefix belongs to a sibling writer (NC subtree,
+            // PUT spool tempfiles, sysadmin-placed dirs) and must be left
+            // strictly alone. See `SESSION_DIR_PREFIX`.
+            let dir_name = match dir.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if strip_session_prefix(dir_name).is_none() {
+                continue;
+            }
 
             let meta_path = dir.join(SESSION_META_FILE);
             let meta_bytes = match fs::read(&meta_path).await {
@@ -346,21 +379,32 @@ impl ChunkedUploadService {
                 }
             }
 
-            // Also clean orphaned temp directories (no session.json or very old)
+            // Also clean orphaned temp directories (no session.json or very old).
+            // Filter strictly on the `oxi-chunk-` prefix so we never touch
+            // sibling directories sharing `OXICLOUD_CHUNK_DIR` (NC subtree
+            // `nextcloud/`, PUT spool tempfiles which are files anyway,
+            // operator-placed dirs). Without the prefix filter this loop
+            // would silently delete anything older than 24 h sitting at the
+            // root of the chunked-upload dir.
             if let Ok(mut entries) = fs::read_dir(&temp_base_dir).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     let path = entry.path();
-                    if path.is_dir() {
-                        let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let upload_id = match strip_session_prefix(dir_name) {
+                        Some(id) => id,
+                        None => continue, // not ours — never touch
+                    };
 
-                        if !sessions.contains_key(dir_name)
-                            && let Ok(metadata) = fs::metadata(&path).await
-                            && let Ok(modified) = metadata.modified()
-                            && modified.elapsed().unwrap_or_default() > SESSION_EXPIRATION
-                        {
-                            let _ = fs::remove_dir_all(&path).await;
-                            tracing::info!("🧹 Cleaned orphaned upload dir: {:?}", path);
-                        }
+                    if !sessions.contains_key(upload_id)
+                        && let Ok(metadata) = fs::metadata(&path).await
+                        && let Ok(modified) = metadata.modified()
+                        && modified.elapsed().unwrap_or_default() > SESSION_EXPIRATION
+                    {
+                        let _ = fs::remove_dir_all(&path).await;
+                        tracing::info!("🧹 Cleaned orphaned upload dir: {:?}", path);
                     }
                 }
             }
@@ -396,8 +440,11 @@ impl ChunkedUploadService {
         let chunk_size = chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         let chunk_count = UploadSession::calculate_chunk_count(total_size, chunk_size);
 
-        // Create temp directory for chunks
-        let temp_dir = self.temp_base_dir.join(&upload_id);
+        // Create temp directory for chunks. The `oxi-chunk-` prefix
+        // tags the directory as belonging to this service so the
+        // shared-`OXICLOUD_CHUNK_DIR` story holds — see
+        // `SESSION_DIR_PREFIX` for the full rationale.
+        let temp_dir = self.temp_base_dir.join(session_dir_name(&upload_id));
         fs::create_dir_all(&temp_dir)
             .await
             .map_err(|e| format!("Failed to create temp directory: {e}"))?;
@@ -1254,7 +1301,7 @@ mod tests {
             .expect("upload_chunk 0");
 
         // Verify files exist on disk
-        let session_dir = base.join(&upload_id);
+        let session_dir = base.join(session_dir_name(&upload_id));
         assert!(session_dir.join(SESSION_META_FILE).exists());
         assert!(session_dir.join(PROGRESS_FILE).exists());
         assert!(session_dir.join("chunk_000000").exists());
@@ -1366,7 +1413,7 @@ mod tests {
             .await
             .expect("create");
 
-        let session_dir = base.join(&resp.upload_id);
+        let session_dir = base.join(session_dir_name(&resp.upload_id));
         assert!(session_dir.exists());
 
         service
@@ -1385,8 +1432,10 @@ mod tests {
         let base = std::env::temp_dir().join(format!("oxicloud_test_{}", Uuid::new_v4()));
         let _ = fs::create_dir_all(&base).await;
 
-        // Manually create an expired session on disk
-        let session_dir = base.join("expired-session");
+        // Manually create an expired session on disk. The dir name MUST
+        // carry the `oxi-chunk-` prefix or recovery will (correctly) skip
+        // it as belonging to another writer co-located in chunk_dir.
+        let session_dir = base.join(session_dir_name("expired-session"));
         let _ = fs::create_dir_all(&session_dir).await;
 
         let expired_session = UploadSession {
@@ -1429,7 +1478,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("oxicloud_test_{}", Uuid::new_v4()));
         let _ = fs::create_dir_all(&base).await;
 
-        let session_dir = base.join("partial-session");
+        let session_dir = base.join(session_dir_name("partial-session"));
         let _ = fs::create_dir_all(&session_dir).await;
 
         let session = UploadSession {
