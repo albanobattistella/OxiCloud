@@ -211,12 +211,38 @@ pub struct StorageConfig {
     /// Maximum upload file size in bytes (default: 10 GB).
     /// Applied as a hard limit to WebDAV PUT and streaming uploads.
     pub max_upload_size: usize,
+    /// Maximum size of a single chunk in a chunked-upload session, in bytes
+    /// (default: 100 MB). Distinct from [`max_upload_size`] (which bounds the
+    /// total file size): NC desktop and other clients split large files into
+    /// many smaller PUTs against `/dav/uploads/…`, so the per-chunk cap can
+    /// be far tighter than the whole-file cap and prevents one HTTP request
+    /// from monopolising server memory or disk. Env: `OXICLOUD_CHUNK_MAX_BYTES`.
+    pub chunk_max_bytes: usize,
+    /// Maximum size of a single non-chunked PUT body, in bytes (default:
+    /// 1 GiB). Set below `max_upload_size` so files larger than this are
+    /// pushed onto the chunked-upload protocol (`/api/uploads/…` or
+    /// `/dav/uploads/…`) — which is resilient to mid-transfer failures,
+    /// resumable, and bounded per-request by `chunk_max_bytes`. Without
+    /// this cap a 10 GB direct PUT spools 10 GB to disk in a single
+    /// request; a connection drop at 95 % loses everything. The server
+    /// returns 413 with a "use chunked upload" hint when a direct PUT
+    /// exceeds this cap. Env: `OXICLOUD_DIRECT_PUT_MAX_BYTES`.
+    pub direct_put_max_bytes: usize,
     /// Directory for upload spool temp files. When `Some`, large uploads are
     /// spooled here instead of the OS default temp dir (often tmpfs/RAM in
     /// containers, where the spool's page-cache counts against the cgroup
     /// memory limit and can trigger OOMKill on large files). Env:
     /// `OXICLOUD_UPLOAD_TMPDIR`.
     pub upload_temp_dir: Option<PathBuf>,
+    /// Root directory for chunked-upload sessions. When `Some`, chunks land
+    /// under `{chunk_dir}/{upload_id}/` (REST) and
+    /// `{chunk_dir}/nextcloud/{user}/{upload_id}/` (NC). When `None`, falls
+    /// back to `{root_dir}/.uploads/`. Pointing this at the **same
+    /// filesystem** as `.blobs/` keeps the final assembled-to-blob promotion
+    /// an atomic `rename(2)` rather than a full cross-FS copy; pointing it
+    /// at fast storage (NVMe) accelerates the chunk-write + assembly loop
+    /// independently of where final blobs live. Env: `OXICLOUD_CHUNK_DIR`.
+    pub chunk_dir: Option<PathBuf>,
     /// Interval (seconds) of the background sweep that reconciles every user's
     /// cached `storage_used_bytes` with the real sum of their files. Keeps the
     /// quota fresh for all mutations without recomputing on the request path.
@@ -359,7 +385,10 @@ impl Default for StorageConfig {
             parallel_threshold: 100 * 1024 * 1024, // 100 MB
             trash_retention_days: 30,              // 30 days
             max_upload_size: MAX_UPLOAD_SIZE,
+            chunk_max_bytes: 100 * 1024 * 1024, // 100 MB — sane upper bound for a single chunked-upload PUT
+            direct_put_max_bytes: 1024 * 1024 * 1024, // 1 GiB — pushes larger uploads onto the chunked protocol
             upload_temp_dir: None,
+            chunk_dir: None,
             usage_reconcile_secs: 600, // 10 minutes
             backend: StorageBackendType::Local,
             s3: None,
@@ -1224,6 +1253,17 @@ impl AppConfig {
         {
             config.storage.max_upload_size = val;
         }
+        if let Ok(chunk_max) = env::var("OXICLOUD_CHUNK_MAX_BYTES").map(|v| v.parse::<usize>())
+            && let Ok(val) = chunk_max
+        {
+            config.storage.chunk_max_bytes = val;
+        }
+        if let Ok(direct_max) =
+            env::var("OXICLOUD_DIRECT_PUT_MAX_BYTES").map(|v| v.parse::<usize>())
+            && let Ok(val) = direct_max
+        {
+            config.storage.direct_put_max_bytes = val;
+        }
 
         // Upload spool directory — keep large upload temp files off tmpfs/RAM
         // (otherwise their page-cache counts against the cgroup memory limit).
@@ -1231,6 +1271,16 @@ impl AppConfig {
             && !dir.trim().is_empty()
         {
             config.storage.upload_temp_dir = Some(PathBuf::from(dir.trim()));
+        }
+        // Chunked-upload session root — separate from the PUT spool because
+        // chunked sessions accumulate disk on long uploads (multi-chunk
+        // resumable transfers) while PUT spool is short-lived. Sysadmins
+        // commonly want one of them on fast/local storage (NVMe) and the
+        // other on bulk storage; this knob lets that be expressed.
+        if let Ok(dir) = env::var("OXICLOUD_CHUNK_DIR")
+            && !dir.trim().is_empty()
+        {
+            config.storage.chunk_dir = Some(PathBuf::from(dir.trim()));
         }
 
         // Background storage-usage reconciliation interval

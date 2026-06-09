@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use tokio::fs::{self, File};
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 
 use bytes::Bytes;
@@ -15,6 +15,53 @@ use crate::application::ports::blob_storage_ports::{
     BlobStorageBackend, BlobStream, StorageHealthStatus,
 };
 use crate::domain::errors::{DomainError, ErrorKind};
+
+/// Fsync the directory containing `child_path` so a preceding rename
+/// or create on `child_path` becomes durable across power loss.
+///
+/// On Linux this issues `fsync(2)` on the directory file descriptor —
+/// the canonical "make the dirent change durable" idiom. macOS does
+/// the same but only persists to the disk controller (true persistence
+/// would need `fcntl(F_FULLFSYNC)`, which tokio doesn't expose). On
+/// Windows, opening a directory needs `FILE_FLAG_BACKUP_SEMANTICS` that
+/// tokio's `File::open` doesn't set; that platform falls through to
+/// `Ok(())` after a debug log.
+///
+/// Best-effort by design: a failure here is logged but does NOT fail
+/// the upload, because the blob file itself was just `sync_all`'d and
+/// is durable on its own. Worst case post-crash recovery: a rename
+/// "reverts" to the un-renamed name (or stays renamed); the dedup-GC
+/// cleanup pass handles either side.
+async fn fsync_parent_dir(child_path: &Path) {
+    let Some(parent) = child_path.parent() else {
+        return;
+    };
+    let parent = parent.to_owned();
+    // std::fs (synchronous) opens directories reliably on Linux/macOS;
+    // do it on the blocking pool so we don't park the tokio worker.
+    let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let dir = std::fs::File::open(&parent)?;
+        dir.sync_all()
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(
+                error = %e,
+                path = %child_path.display(),
+                "Blob parent-dir fsync failed (rename durability not guaranteed)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %child_path.display(),
+                "Blob parent-dir fsync task join failed"
+            );
+        }
+    }
+}
 
 /// Chunk size for streaming file reads (256 KB).
 const STREAM_CHUNK_SIZE: usize = 256 * 1024;
@@ -122,15 +169,30 @@ impl BlobStorageBackend for LocalBlobBackend {
 
             // Atomic rename (same filesystem).  Falls back to copy+delete for
             // cross-device moves (EXDEV errno 18).
+            //
+            // Durability boundary: the caller is responsible for
+            // having sync_all'd the source file before invoking this
+            // function — both `interfaces::upload_spool::spool_body_to_temp`
+            // and `chunked_upload_service::complete_upload_inner`
+            // (the two production producers of `source_path`) now do
+            // so. We fsync the parent of `blob_path` AFTER the rename
+            // so the dirent change itself becomes durable; without
+            // that, a power loss can resurrect the old (unrenamed)
+            // name even when the file contents survive.
             if let Err(e) = fs::rename(&source_path, &blob_path).await {
                 if e.raw_os_error() == Some(18) {
-                    // EXDEV — cross-device link
+                    // EXDEV — cross-device link. The copy() target is
+                    // a fresh file we created, so fsync it before the
+                    // parent-dir fsync below.
                     fs::copy(&source_path, &blob_path).await.map_err(|ce| {
                         DomainError::internal_error(
                             "Blob",
                             format!("Failed to copy file to blob store: {}", ce),
                         )
                     })?;
+                    if let Ok(f) = fs::File::open(&blob_path).await {
+                        let _ = f.sync_all().await;
+                    }
                     let _ = fs::remove_file(&source_path).await;
                 } else if fs::try_exists(&blob_path).await.unwrap_or(false) {
                     // Concurrent writer placed the blob — discard our copy
@@ -143,6 +205,8 @@ impl BlobStorageBackend for LocalBlobBackend {
                     ));
                 }
             }
+
+            fsync_parent_dir(&blob_path).await;
 
             Ok(file_size)
         })
@@ -163,13 +227,27 @@ impl BlobStorageBackend for LocalBlobBackend {
                 return Ok(size);
             }
 
-            // Write directly to blob path
-            fs::write(&blob_path, &data).await.map_err(|e| {
+            // Write directly to blob path. `fs::write` is `create +
+            // write_all + close` — but the close on tokio::fs::File
+            // does NOT fsync, so we open explicitly to keep the
+            // `sync_all` call site obvious. Same durability story as
+            // `put_blob`: the blob file is fsync'd before the parent
+            // directory is, so both the content and the dirent
+            // creation survive a power loss in the same step.
+            let mut file = fs::File::create(&blob_path).await.map_err(|e| {
+                DomainError::internal_error("Blob", format!("Failed to create blob file: {}", e))
+            })?;
+            file.write_all(&data).await.map_err(|e| {
                 DomainError::internal_error(
                     "Blob",
                     format!("Failed to write blob from bytes: {}", e),
                 )
             })?;
+            file.sync_all().await.map_err(|e| {
+                DomainError::internal_error("Blob", format!("Failed to fsync blob file: {}", e))
+            })?;
+            drop(file);
+            fsync_parent_dir(&blob_path).await;
 
             Ok(size)
         })

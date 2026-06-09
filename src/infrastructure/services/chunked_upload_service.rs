@@ -44,9 +44,31 @@ pub const MAX_PARALLEL_CHUNKS: usize = 6;
 /// Upload session expiration time (24 h)
 const SESSION_EXPIRATION: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Prefix every session directory name with this string so the cleanup
+/// loop can be safely co-located with unrelated writers (PUT spool
+/// tempfiles, the NC chunked subtree, anything else a sysadmin places
+/// under the same `OXICLOUD_CHUNK_DIR`). The orphan-cleanup scan
+/// filters by this prefix, so non-OxiCloud directories sharing the
+/// root are never touched.
+const SESSION_DIR_PREFIX: &str = "oxi-chunk-";
+
 /// Sentinel file names inside each session directory
 const SESSION_META_FILE: &str = "session.json";
 const PROGRESS_FILE: &str = "progress.bin";
+
+/// Build a session directory name from an upload_id by attaching the
+/// well-known prefix. Symmetric with [`strip_session_prefix`].
+fn session_dir_name(upload_id: &str) -> String {
+    format!("{}{}", SESSION_DIR_PREFIX, upload_id)
+}
+
+/// Extract the upload_id from a session directory name. Returns
+/// `None` when the directory wasn't created by this service (no
+/// `oxi-chunk-` prefix) — the recovery and cleanup paths use this to
+/// skip foreign directories cohabiting under `OXICLOUD_CHUNK_DIR`.
+fn strip_session_prefix(dir_name: &str) -> Option<&str> {
+    dir_name.strip_prefix(SESSION_DIR_PREFIX)
+}
 
 // ─── Serialisable types ──────────────────────────────────────────────────────
 
@@ -203,6 +225,15 @@ impl ChunkedUploadService {
         // Ensure the base directory exists
         let _ = fs::create_dir_all(&temp_base_dir).await;
 
+        // One-shot migration of pre-prefix session directories to the
+        // `oxi-chunk-{uuid}/` layout. Without this, any chunked upload
+        // in flight at the moment an admin upgrades from a pre-prefix
+        // build to this one would be orphaned — the recovery scan
+        // filters strictly on the `oxi-chunk-` prefix and would skip
+        // legacy `{uuid}/` directories. Idempotent: subsequent boots
+        // find no legacy dirs left to rename and do nothing.
+        Self::migrate_pre_prefix_sessions(&temp_base_dir).await;
+
         // Recover sessions that survived a restart
         let recovered = Self::recover_sessions(&temp_base_dir).await;
         let recovered_count = recovered.len();
@@ -235,6 +266,84 @@ impl ChunkedUploadService {
         }
     }
 
+    // ── Upgrade migration ────────────────────────────────────────────────
+
+    /// One-shot upgrade migration: rename any pre-prefix session
+    /// directory to the new `oxi-chunk-{uuid}/` layout so the recovery
+    /// scan picks it up.
+    ///
+    /// A pre-prefix session is identified by: a directory under
+    /// `temp_base_dir` whose name does NOT start with
+    /// `SESSION_DIR_PREFIX` but whose contents include `session.json`.
+    /// That signature can only come from a chunked upload created by
+    /// a pre-prefix OxiCloud build — admins don't normally drop
+    /// session.json files into the chunk dir.
+    ///
+    /// Idempotent: on a fresh boot all dirs are already prefixed, the
+    /// scan finds nothing to rename, no-op. Safe against concurrent
+    /// boots: `fs::rename` is atomic, so a racing migration sees the
+    /// source disappear and proceeds.
+    async fn migrate_pre_prefix_sessions(base: &Path) {
+        let mut entries = match fs::read_dir(base).await {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let mut migrated_count = 0usize;
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            if dir_name.starts_with(SESSION_DIR_PREFIX) {
+                continue; // already migrated
+            }
+            // Identify pre-prefix sessions by `session.json` presence.
+            // Avoids touching the NC subtree (`nextcloud/` — no
+            // session.json at that level) and any operator-placed
+            // sibling directories without the marker.
+            if !fs::try_exists(path.join(SESSION_META_FILE))
+                .await
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let new_path = base.join(session_dir_name(&dir_name));
+            match fs::rename(&path, &new_path).await {
+                Ok(()) => {
+                    migrated_count += 1;
+                    tracing::info!(
+                        old = %path.display(),
+                        new = %new_path.display(),
+                        "Migrated pre-prefix chunked-upload session to new layout"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        old = %path.display(),
+                        "Failed to migrate pre-prefix session — left orphaned on disk; \
+                         next chunk PATCH from the client will 404 and the client should \
+                         restart its upload session. Manual rm safe."
+                    );
+                }
+            }
+        }
+
+        if migrated_count > 0 {
+            tracing::info!(
+                count = migrated_count,
+                "🔧 Upgraded chunked-upload session layout (one-shot migration)"
+            );
+        }
+    }
+
     // ── Recovery ─────────────────────────────────────────────────────────
 
     /// Scan `temp_base_dir` for directories containing `session.json`,
@@ -250,6 +359,17 @@ impl ChunkedUploadService {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let dir = entry.path();
             if !dir.is_dir() {
+                continue;
+            }
+            // Only consider directories WE created — anything without the
+            // `oxi-chunk-` prefix belongs to a sibling writer (NC subtree,
+            // PUT spool tempfiles, sysadmin-placed dirs) and must be left
+            // strictly alone. See `SESSION_DIR_PREFIX`.
+            let dir_name = match dir.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if strip_session_prefix(dir_name).is_none() {
                 continue;
             }
 
@@ -346,21 +466,32 @@ impl ChunkedUploadService {
                 }
             }
 
-            // Also clean orphaned temp directories (no session.json or very old)
+            // Also clean orphaned temp directories (no session.json or very old).
+            // Filter strictly on the `oxi-chunk-` prefix so we never touch
+            // sibling directories sharing `OXICLOUD_CHUNK_DIR` (NC subtree
+            // `nextcloud/`, PUT spool tempfiles which are files anyway,
+            // operator-placed dirs). Without the prefix filter this loop
+            // would silently delete anything older than 24 h sitting at the
+            // root of the chunked-upload dir.
             if let Ok(mut entries) = fs::read_dir(&temp_base_dir).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     let path = entry.path();
-                    if path.is_dir() {
-                        let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let upload_id = match strip_session_prefix(dir_name) {
+                        Some(id) => id,
+                        None => continue, // not ours — never touch
+                    };
 
-                        if !sessions.contains_key(dir_name)
-                            && let Ok(metadata) = fs::metadata(&path).await
-                            && let Ok(modified) = metadata.modified()
-                            && modified.elapsed().unwrap_or_default() > SESSION_EXPIRATION
-                        {
-                            let _ = fs::remove_dir_all(&path).await;
-                            tracing::info!("🧹 Cleaned orphaned upload dir: {:?}", path);
-                        }
+                    if !sessions.contains_key(upload_id)
+                        && let Ok(metadata) = fs::metadata(&path).await
+                        && let Ok(modified) = metadata.modified()
+                        && modified.elapsed().unwrap_or_default() > SESSION_EXPIRATION
+                    {
+                        let _ = fs::remove_dir_all(&path).await;
+                        tracing::info!("🧹 Cleaned orphaned upload dir: {:?}", path);
                     }
                 }
             }
@@ -396,8 +527,11 @@ impl ChunkedUploadService {
         let chunk_size = chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         let chunk_count = UploadSession::calculate_chunk_count(total_size, chunk_size);
 
-        // Create temp directory for chunks
-        let temp_dir = self.temp_base_dir.join(&upload_id);
+        // Create temp directory for chunks. The `oxi-chunk-` prefix
+        // tags the directory as belonging to this service so the
+        // shared-`OXICLOUD_CHUNK_DIR` story holds — see
+        // `SESSION_DIR_PREFIX` for the full rationale.
+        let temp_dir = self.temp_base_dir.join(session_dir_name(&upload_id));
         fs::create_dir_all(&temp_dir)
             .await
             .map_err(|e| format!("Failed to create temp directory: {e}"))?;
@@ -460,6 +594,188 @@ impl ChunkedUploadService {
             chunk_size,
             total_chunks: chunk_count,
             expires_at,
+        })
+    }
+
+    /// Prepare a chunk write — validates session ownership and chunk
+    /// index, returns the on-disk path the caller should stream the
+    /// HTTP body to plus the expected byte count for that chunk.
+    ///
+    /// Used by the streaming REST PUT path: the handler calls
+    /// `prepare_chunk` → streams body to disk via
+    /// `interfaces::upload_spool::stream_body_to_path` → calls
+    /// `commit_chunk` to finalise. This lets the body bypass the
+    /// in-memory `Bytes` allocation entirely (peak heap ~one HTTP
+    /// frame instead of "chunk size").
+    ///
+    /// Returns `Err` if the session is unknown, owned by another user,
+    /// the chunk index is out of range, or the chunk is already complete.
+    pub async fn prepare_chunk(
+        &self,
+        upload_id: &str,
+        user_id: Uuid,
+        chunk_index: usize,
+    ) -> Result<(PathBuf, usize), DomainError> {
+        self.verify_session_owner(upload_id, &user_id.to_string())
+            .map_err(|e| DomainError::new(ErrorKind::NotFound, "ChunkedUpload", e))?;
+
+        let session = self.sessions.get(upload_id).ok_or_else(|| {
+            DomainError::new(
+                ErrorKind::NotFound,
+                "ChunkedUpload",
+                format!("Upload session not found: {}", upload_id),
+            )
+        })?;
+
+        if chunk_index >= session.chunks.len() {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!(
+                    "Invalid chunk index: {} (max: {})",
+                    chunk_index,
+                    session.chunks.len() - 1
+                ),
+            ));
+        }
+
+        let chunk = &session.chunks[chunk_index];
+        if chunk.status == ChunkStatus::Complete {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!("Chunk {} already uploaded", chunk_index),
+            ));
+        }
+
+        Ok((
+            session.temp_dir.join(format!("chunk_{:06}", chunk_index)),
+            chunk.size,
+        ))
+    }
+
+    /// Finalise a chunk write — verifies the actually-written byte count
+    /// matches the chunk's declared size, validates an optional
+    /// algorithm-tagged checksum, and updates session state. The chunk
+    /// file at `{session.temp_dir}/chunk_{index:06}` must already have
+    /// been written by the caller (typically via
+    /// `stream_body_to_path`).
+    ///
+    /// `actual_size` is the byte count the streaming write reported;
+    /// `computed_checksum` is the hex digest computed during streaming
+    /// (or `None` if the client didn't request a checksum). When
+    /// `expected_checksum` is supplied the two are compared; a
+    /// mismatch removes the partial file and returns `ValidationError`
+    /// so a client retry against the same chunk index gets a clean
+    /// slot. A size mismatch does the same.
+    pub async fn commit_chunk(
+        &self,
+        upload_id: &str,
+        user_id: Uuid,
+        chunk_index: usize,
+        actual_size: u64,
+        computed_checksum: Option<String>,
+        expected_checksum: Option<String>,
+    ) -> Result<ChunkUploadResponseDto, DomainError> {
+        self.verify_session_owner(upload_id, &user_id.to_string())
+            .map_err(|e| DomainError::new(ErrorKind::NotFound, "ChunkedUpload", e))?;
+
+        // Re-fetch chunk metadata under fresh lock — guards against the
+        // (vanishingly unlikely) case of a session expiry / cancellation
+        // racing with the write.
+        let (chunk_path, expected_size, persist_path) = {
+            let session = self.sessions.get(upload_id).ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::NotFound,
+                    "ChunkedUpload",
+                    "Session disappeared".to_string(),
+                )
+            })?;
+            if chunk_index >= session.chunks.len() {
+                return Err(DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "ChunkedUpload",
+                    format!("Invalid chunk index: {}", chunk_index),
+                ));
+            }
+            (
+                session.temp_dir.join(format!("chunk_{:06}", chunk_index)),
+                session.chunks[chunk_index].size,
+                session.temp_dir.join(PROGRESS_FILE),
+            )
+        };
+
+        // Size check — the streaming body may have been truncated by
+        // the client mid-flight or exceeded the chunk's declared
+        // length. Either way we don't want a partial chunk to count
+        // as complete; nuke it and ask the client to retry.
+        if actual_size != expected_size as u64 {
+            let _ = fs::remove_file(&chunk_path).await;
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!(
+                    "Invalid chunk size: expected {} bytes, got {} bytes",
+                    expected_size, actual_size
+                ),
+            ));
+        }
+
+        // Checksum check — case-insensitive compare so clients that
+        // send uppercase hex still match.
+        if let Some(expected) = expected_checksum.as_ref()
+            && let Some(actual) = computed_checksum.as_ref()
+            && !expected.eq_ignore_ascii_case(actual)
+        {
+            let _ = fs::remove_file(&chunk_path).await;
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!("Checksum mismatch: expected {}, got {}", expected, actual),
+            ));
+        }
+
+        // Update session state — DashMap shard lock held only for the
+        // RAM updates (~µs). The bitmask write happens AFTER the ref
+        // is dropped so concurrent uploads to other sessions are never
+        // blocked. Mirrors the legacy `upload_chunk_inner` semantics.
+        let (bytes_received, progress, is_complete, persist_bitmask) = {
+            let mut session = self.sessions.get_mut(upload_id).ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::NotFound,
+                    "ChunkedUpload",
+                    "Session disappeared".to_string(),
+                )
+            })?;
+            session.chunks[chunk_index].status = ChunkStatus::Complete;
+            session.chunks[chunk_index].checksum = expected_checksum;
+            session.bytes_received += actual_size;
+            session.last_activity = Utc::now();
+            let bitmask = session.build_progress_bitmask();
+            (
+                session.bytes_received,
+                session.progress(),
+                session.is_complete(),
+                bitmask,
+            )
+        };
+
+        if let Err(e) = fs::write(&persist_path, &persist_bitmask).await {
+            tracing::warn!("Failed to persist progress for {upload_id}: {e}");
+        }
+
+        tracing::debug!(
+            "📦 Chunk {} committed for {} ({:.1}% complete)",
+            chunk_index,
+            upload_id,
+            progress * 100.0
+        );
+
+        Ok(ChunkUploadResponseDto {
+            chunk_index,
+            bytes_received,
+            progress,
+            is_complete,
         })
     }
 
@@ -723,6 +1039,22 @@ impl ChunkedUploadService {
             output
                 .flush()
                 .map_err(|e| format!("Failed to flush assembled file: {e}"))?;
+            // ── Durability boundary ────────────────────────────────────
+            // `flush` drains BufWriter's userspace buffer but leaves the
+            // bytes in the kernel page cache. Without `sync_all`, a
+            // power loss between this `complete_upload` returning 2xx
+            // and the OS writeback timer firing (~5 s default) loses
+            // the merged blob — and PG's metadata row references a hash
+            // that no longer exists on disk. Reclaim the BufWriter's
+            // inner File via `into_inner` so we can `sync_all` it; the
+            // BufWriter would otherwise drop without flushing on the
+            // inner handle.
+            let raw_output = output
+                .into_inner()
+                .map_err(|e| format!("into_inner on BufWriter failed: {e}"))?;
+            raw_output
+                .sync_all()
+                .map_err(|e| format!("Failed to fsync assembled file: {e}"))?;
 
             // Clean up chunk files (keep assembled) — already on a blocking thread
             for (_index, chunk_path) in &chunks_meta {
@@ -1056,7 +1388,7 @@ mod tests {
             .expect("upload_chunk 0");
 
         // Verify files exist on disk
-        let session_dir = base.join(&upload_id);
+        let session_dir = base.join(session_dir_name(&upload_id));
         assert!(session_dir.join(SESSION_META_FILE).exists());
         assert!(session_dir.join(PROGRESS_FILE).exists());
         assert!(session_dir.join("chunk_000000").exists());
@@ -1168,7 +1500,7 @@ mod tests {
             .await
             .expect("create");
 
-        let session_dir = base.join(&resp.upload_id);
+        let session_dir = base.join(session_dir_name(&resp.upload_id));
         assert!(session_dir.exists());
 
         service
@@ -1187,8 +1519,10 @@ mod tests {
         let base = std::env::temp_dir().join(format!("oxicloud_test_{}", Uuid::new_v4()));
         let _ = fs::create_dir_all(&base).await;
 
-        // Manually create an expired session on disk
-        let session_dir = base.join("expired-session");
+        // Manually create an expired session on disk. The dir name MUST
+        // carry the `oxi-chunk-` prefix or recovery will (correctly) skip
+        // it as belonging to another writer co-located in chunk_dir.
+        let session_dir = base.join(session_dir_name("expired-session"));
         let _ = fs::create_dir_all(&session_dir).await;
 
         let expired_session = UploadSession {
@@ -1231,7 +1565,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("oxicloud_test_{}", Uuid::new_v4()));
         let _ = fs::create_dir_all(&base).await;
 
-        let session_dir = base.join("partial-session");
+        let session_dir = base.join(session_dir_name("partial-session"));
         let _ = fs::create_dir_all(&session_dir).await;
 
         let session = UploadSession {
@@ -1291,6 +1625,141 @@ mod tests {
             "Missing chunk file must be downgraded to Pending"
         );
         assert_eq!(s.bytes_received, 512);
+
+        let _ = fs::remove_dir_all(&base).await;
+    }
+
+    /// Upgrade-path scenario: a pre-prefix session directory (the layout
+    /// used by builds before the `oxi-chunk-` prefix change) gets renamed
+    /// in place when the service starts, then recovered normally. Without
+    /// the migration, the upgrade would orphan every in-flight REST
+    /// chunked upload because recovery filters strictly on the prefix.
+    #[tokio::test]
+    async fn test_migrate_pre_prefix_session_on_boot() {
+        let base = std::env::temp_dir().join(format!("oxicloud_test_{}", Uuid::new_v4()));
+        let _ = fs::create_dir_all(&base).await;
+
+        // Pre-upgrade layout: `{base}/legacy-upload-id/session.json`
+        // (no `oxi-chunk-` prefix on the directory name).
+        let legacy_id = "legacy-upload-id";
+        let legacy_dir = base.join(legacy_id);
+        let _ = fs::create_dir_all(&legacy_dir).await;
+
+        let session = UploadSession {
+            id: legacy_id.into(),
+            user_id: "user-1".into(),
+            filename: "in-flight.bin".into(),
+            folder_id: None,
+            content_type: "application/octet-stream".into(),
+            total_size: 1024,
+            chunk_size: 1024,
+            chunks: vec![ChunkInfo {
+                index: 0,
+                offset: 0,
+                size: 1024,
+                status: ChunkStatus::Pending,
+                checksum: None,
+            }],
+            created_at: Utc::now(),
+            last_activity: Utc::now(),
+            // `temp_dir` here is the legacy path — after migration the
+            // session.json's path won't match the new location on disk,
+            // but recovery doesn't use temp_dir for lookups; chunk
+            // I/O within commit_chunk computes paths from the current
+            // session dir, which is the renamed location.
+            temp_dir: legacy_dir.clone(),
+            bytes_received: 0,
+        };
+        fs::write(
+            legacy_dir.join(SESSION_META_FILE),
+            serde_json::to_vec(&session).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Boot the service — migration runs as part of `new`.
+        let svc = ChunkedUploadService::new(base.clone()).await;
+
+        // Legacy path must be gone, prefixed path must exist + carry the
+        // session.json.
+        assert!(
+            !legacy_dir.exists(),
+            "Legacy un-prefixed dir should have been renamed away"
+        );
+        let new_dir = base.join(session_dir_name(legacy_id));
+        assert!(
+            new_dir.exists(),
+            "Prefixed dir should exist post-migration at {}",
+            new_dir.display()
+        );
+        assert!(
+            new_dir.join(SESSION_META_FILE).exists(),
+            "session.json must travel with the rename"
+        );
+
+        // Recovery picks it up — the session is now in the live map
+        // keyed by its original upload_id.
+        assert!(
+            svc.sessions.contains_key(legacy_id),
+            "Recovered session must be keyed by its original upload_id"
+        );
+
+        let _ = fs::remove_dir_all(&base).await;
+    }
+
+    /// Idempotency: running migration twice (a second boot after a
+    /// successful migration) must be a no-op. The already-prefixed
+    /// directory is left untouched, no spurious double-prefixing.
+    #[tokio::test]
+    async fn test_migration_is_idempotent() {
+        let base = std::env::temp_dir().join(format!("oxicloud_test_{}", Uuid::new_v4()));
+        let _ = fs::create_dir_all(&base).await;
+
+        let upload_id = "already-prefixed";
+        let prefixed_dir = base.join(session_dir_name(upload_id));
+        let _ = fs::create_dir_all(&prefixed_dir).await;
+
+        // Minimal session.json — just enough to count as a session for
+        // the migration's identification heuristic.
+        let session = UploadSession {
+            id: upload_id.into(),
+            user_id: "user-1".into(),
+            filename: "x.bin".into(),
+            folder_id: None,
+            content_type: "application/octet-stream".into(),
+            total_size: 1,
+            chunk_size: 1,
+            chunks: vec![ChunkInfo {
+                index: 0,
+                offset: 0,
+                size: 1,
+                status: ChunkStatus::Pending,
+                checksum: None,
+            }],
+            created_at: Utc::now(),
+            last_activity: Utc::now(),
+            temp_dir: prefixed_dir.clone(),
+            bytes_received: 0,
+        };
+        fs::write(
+            prefixed_dir.join(SESSION_META_FILE),
+            serde_json::to_vec(&session).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Two migration runs in a row.
+        ChunkedUploadService::migrate_pre_prefix_sessions(&base).await;
+        ChunkedUploadService::migrate_pre_prefix_sessions(&base).await;
+
+        // The dir is still there, with the SAME (single) prefix —
+        // not `oxi-chunk-oxi-chunk-already-prefixed/`.
+        assert!(prefixed_dir.exists());
+        let double_prefixed = base.join(session_dir_name(&session_dir_name(upload_id)));
+        assert!(
+            !double_prefixed.exists(),
+            "Migration must not double-prefix an already-prefixed dir"
+        );
 
         let _ = fs::remove_dir_all(&base).await;
     }

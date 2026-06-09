@@ -17,6 +17,55 @@ pub const DEFAULT_CHUNK_SIZE: usize = 5 * 1024 * 1024;
 /// Minimum file size to use chunked upload (10 MB).
 pub const CHUNKED_UPLOAD_THRESHOLD: usize = 10 * 1024 * 1024;
 
+/// Algorithm used by the client-side chunk checksum.
+///
+/// The wire format is `?checksum=<hex>&checksumalg=<name>` (or the
+/// equivalent header pair for older clients that send only `Content-MD5`).
+/// Clients that omit `checksumalg` are assumed to mean MD5 — that's the
+/// algorithm baked into the legacy `Content-MD5` header (RFC 1864), TUS-
+/// like upload protocols, and S3 multipart ETags.
+///
+/// Three supported variants, all from already-declared dependencies:
+/// - `Md5` — legacy default; weak cryptographically but fine for
+///   transport-integrity checks under TLS.
+/// - `Sha256` — industry-standard, FIPS-compliant, widely supported by
+///   sync clients (AWS S3 also accepts SHA-256 trailers).
+/// - `Blake3` — fastest of the three; already used by the blob-storage
+///   layer, so the chunk-level integrity check and the assembled-file
+///   dedup hash use the same algorithm when clients opt in.
+///
+/// Skipped intentionally: SHA-1 (deprecated, broken), CRC32 (too weak for
+/// integrity claims). Both can be added if a real client need appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksumAlg {
+    Md5,
+    Sha256,
+    Blake3,
+}
+
+impl ChecksumAlg {
+    /// Parse a client-supplied algorithm name. Case-insensitive. Accepts
+    /// `sha-256` as a synonym for `sha256` since both forms are common
+    /// in HTTP headers. Unknown names return `None` so the handler can
+    /// 400 with the offending value.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "md5" => Some(Self::Md5),
+            "sha256" | "sha-256" => Some(Self::Sha256),
+            "blake3" => Some(Self::Blake3),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Md5 => "md5",
+            Self::Sha256 => "sha256",
+            Self::Blake3 => "blake3",
+        }
+    }
+}
+
 /// Response returned when a new upload session is created.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CreateUploadResponseDto {

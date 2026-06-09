@@ -171,11 +171,23 @@ impl AppServiceFactory {
         // Initialize thumbnail directories
         thumbnail_service.initialize().await?;
 
-        // Chunked upload service for large files (>10MB)
-        let chunked_temp_dir = std::path::PathBuf::from(&self.storage_path).join(".uploads");
+        // Chunked upload service for large files (>10MB).
+        // Root for both REST (`/api/uploads/...`) and NC (`/dav/uploads/...`)
+        // chunked sessions: honour `OXICLOUD_CHUNK_DIR` when set so sysadmins
+        // can put session directories on fast storage (NVMe) or on the same
+        // filesystem as `.blobs/` (turns the final blob promotion into an
+        // atomic rename instead of a cross-FS copy). Falls back to
+        // `{storage_path}/.uploads/` when unset — backwards-compatible with
+        // every existing deployment.
+        let chunk_root = self
+            .config
+            .storage
+            .chunk_dir
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(&self.storage_path).join(".uploads"));
         let chunked_upload_service = Arc::new(
             crate::infrastructure::services::chunked_upload_service::ChunkedUploadService::new(
-                chunked_temp_dir,
+                chunk_root.clone(),
             )
             .await,
         );
@@ -870,7 +882,18 @@ impl AppServiceFactory {
                 );
             }
 
-            let chunk_base = self.storage_path.join(".uploads/nextcloud");
+            // NC chunked-upload sessions root. Honour `OXICLOUD_CHUNK_DIR`
+            // (same env var that the REST chunked service uses) so a single
+            // value covers both surfaces and they stay co-located on one
+            // filesystem; fall back to `{storage_path}/.uploads/` to match
+            // the legacy layout.
+            let chunk_root = self
+                .config
+                .storage
+                .chunk_dir
+                .clone()
+                .unwrap_or_else(|| self.storage_path.join(".uploads"));
+            let chunk_base = chunk_root.join("nextcloud");
             let chunked_uploads = Arc::new(NextcloudChunkedUploadService::new(chunk_base));
 
             let file_id_repo = Arc::new(

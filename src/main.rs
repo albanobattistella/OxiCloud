@@ -143,6 +143,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration from environment variables
     let config = common::config::AppConfig::from_env();
 
+    // Surface the upload-size limits at startup. Operators (and the
+    // CI runner) need to see what's actually in effect — a silent
+    // fallback to the 100 MB default when `OXICLOUD_CHUNK_MAX_BYTES`
+    // is mistyped or missing is the exact failure mode that's
+    // hardest to spot from chunked-upload tests.
+    tracing::info!(
+        max_upload_size_mb = config.storage.max_upload_size / (1024 * 1024),
+        direct_put_max_bytes_mb = config.storage.direct_put_max_bytes / (1024 * 1024),
+        chunk_max_bytes_mb = config.storage.chunk_max_bytes / (1024 * 1024),
+        "Upload limits loaded from config"
+    );
+
     // Ensure storage and locales directories exist
     let storage_path = config.storage_path.clone();
     if !storage_path.exists() {
