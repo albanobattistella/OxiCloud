@@ -497,6 +497,21 @@ async function loadFiles(options = { insertHistory: true }) {
 }
 
 /**
+ * Replace the list contents with a whole result set in one batched render
+ * (single DocumentFragment pass — no per-item DOM scans, smooth-scrolls or
+ * highlight pulses). Used by search to display results; optimistic
+ * single-item inserts should keep using `addItem`.
+ *
+ * @param {Array<FileItem|FolderItem>} items
+ */
+function renderItems(items) {
+    const component = _ensureComponent();
+    if (!component) return;
+    document.getElementById('files-container-error')?.classList.add('hidden');
+    component.render(items);
+}
+
+/**
  * Re-evaluate the shared badge for every item currently rendered in the Files list.
  * Call this after the outgoing grants cache has been refreshed.
  */
@@ -504,4 +519,4 @@ function refreshSharedBadges() {
     _component?.refreshSharedBadges();
 }
 
-export { addItem, filesView, loadFiles, refreshSharedBadges };
+export { addItem, filesView, loadFiles, refreshSharedBadges, renderItems };
