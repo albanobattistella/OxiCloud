@@ -151,6 +151,23 @@ log "API confirms trash is empty."
 THUMB_FILES=$(find "$STORAGE_PATH/.thumbnails" -type f 2>/dev/null || true)
 BLOB_FILES=$(find  "$STORAGE_PATH/.blobs"      -type f 2>/dev/null || true)
 
+if [[ -n "$THUMB_FILES" || -n "$BLOB_FILES" ]]; then
+    # Async thumbnail/blob workers may still be flushing writes from the
+    # last test's uploads when the cleanup phase reaches this point —
+    # particularly on fast CI runners where the test loop outpaces the
+    # worker. Poll for up to 5 s and exit the loop the moment storage
+    # drains. TODO: replace with a deterministic worker-drain signal
+    # (e.g. queue depth on /ready) when one exists.
+    log "Thumb/blob leftovers detected — polling for async worker drain (race guard)"
+    for attempt in 1 2 3 4 5; do
+        sleep 1
+        THUMB_FILES=$(find "$STORAGE_PATH/.thumbnails" -type f 2>/dev/null || true)
+        BLOB_FILES=$(find  "$STORAGE_PATH/.blobs"      -type f 2>/dev/null || true)
+        [[ -z "$THUMB_FILES" && -z "$BLOB_FILES" ]] && break
+        log "  attempt $attempt: still present, retrying..."
+    done
+fi
+
 # Chunked-upload spool. After every chunked-upload session is either
 # completed (assembled + promoted) or aborted, this dir MUST be empty
 # — a leftover chunk file means a session-cleanup path forgot its
