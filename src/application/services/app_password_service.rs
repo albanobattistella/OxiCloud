@@ -30,9 +30,25 @@ const NC_APP_PASSWORD_GROUP_LEN: usize = 5;
 const NC_PREFIX_LEN: usize = 8;
 
 /// TTL for cached Basic Auth verification results.
-/// Balances performance (avoids repeated Argon2id + DB queries) with security
-/// (limits the window during which a revoked app password remains usable).
-const BASIC_AUTH_CACHE_TTL_SECS: u64 = 30;
+///
+/// DAV sync clients (Nautilus, Windows Explorer, Apple Calendar, …) poll
+/// continuously, and every cache miss costs a full Argon2id verification
+/// (~50–100 ms of CPU) plus two DB round-trips. A 30 s TTL re-paid that
+/// cost every 30 s per client; 5 min cuts it ~10× under steady sync load.
+///
+/// Security envelope of this window:
+/// - **Revocation is immediate**: `revoke()` calls `invalidate_entries_if`
+///   on this cache for the user, so a revoked password never survives in
+///   cache regardless of TTL.
+/// - **Expiry / deactivation are bounded by the TTL**: `expires_at` and
+///   `user.is_active()` are only re-checked on a cache *miss* (the DB
+///   query filters them), so an app password that expires — or a user
+///   deactivated via `set_user_active` — may keep authenticating from
+///   cache for at most this long. 5 min is comparable to a typical JWT
+///   access-token lifetime, so the grace window is consistent across
+///   auth surfaces. Lengthen with care; shorten if a tighter bound on
+///   post-deactivation access is required.
+const BASIC_AUTH_CACHE_TTL_SECS: u64 = 300;
 
 /// Maximum number of cached Basic Auth verifications.
 /// Each entry is ~160 bytes (32-byte key + 4 small strings), so 10 000
@@ -61,9 +77,9 @@ pub struct AppPasswordService {
     ///
     /// **Value**: the authenticated identity (user_id, username, email, role).
     ///
-    /// **Eviction**: TTL-based (30 s) + capacity-based (10 000 entries).
-    /// Failed verifications are *never* cached, so brute-force attackers
-    /// always pay the full Argon2id cost.
+    /// **Eviction**: TTL-based (see `BASIC_AUTH_CACHE_TTL_SECS`) +
+    /// capacity-based (10 000 entries). Failed verifications are *never*
+    /// cached, so brute-force attackers always pay the full Argon2id cost.
     auth_cache: Cache<[u8; 32], CachedBasicAuthResult>,
 }
 
