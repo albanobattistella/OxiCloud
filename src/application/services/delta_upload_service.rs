@@ -135,6 +135,11 @@ enum CommitMode {
 }
 
 /// Outcome of a commit attempt.
+// `Done` carries a full `FileDto` (~297 B) while `StillMissing` is tiny; the
+// size gap trips `clippy::large_enum_variant` under Rust 1.93's stricter lint.
+// The value is short-lived (returned once per commit), so the gap isn't worth
+// boxing — silence the lint rather than complicate the call sites.
+#[allow(clippy::large_enum_variant)]
 pub enum DeltaCommitOutcome {
     /// The file row exists; `created` distinguishes 201 from 200.
     Done { file: FileDto, created: bool },
