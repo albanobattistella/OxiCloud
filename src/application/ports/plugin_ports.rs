@@ -12,7 +12,9 @@
 //!   `on_user_login`;
 //! - one host import `log` (observe-only — the only authority a plugin has).
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 /// The single ABI version this host speaks. A breaking change bumps this and
 /// the namespace suffix ([`HOST_NAMESPACE`]); plugins built against a different
@@ -61,6 +63,7 @@ pub trait PluginDispatchPort: Send + Sync + 'static {
 /// `ExtismPluginManager`) owns the same in-memory plugin set the dispatch port
 /// reads, so a toggle or install takes effect on the live dispatch path with no
 /// restart. All operations are admin-gated at the HTTP layer.
+#[async_trait]
 pub trait PluginManagementPort: Send + Sync + 'static {
     /// Every installed plugin, enabled or not, with its load-time metadata.
     fn list(&self) -> Vec<PluginInfo>;
@@ -83,6 +86,91 @@ pub trait PluginManagementPort: Send + Sync + 'static {
 
     /// Unload a plugin and delete its directory.
     fn remove(&self, id: &str) -> Result<(), PluginMgmtError>;
+
+    /// Read a filtered, paginated page of a plugin's structured log entries
+    /// (newest first). `NotFound` if no such plugin is installed.
+    async fn read_logs(&self, id: &str, query: LogQuery) -> Result<LogPage, PluginMgmtError>;
+
+    /// Delete all persisted log files for a plugin (keeps the plugin installed).
+    async fn clear_logs(&self, id: &str) -> Result<(), PluginMgmtError>;
+
+    /// The plugin's effective per-plugin retention (its on-disk override, or the
+    /// configured defaults when none is set).
+    async fn get_retention(&self, id: &str) -> Result<RetentionSettings, PluginMgmtError>;
+
+    /// Persist a per-plugin retention override (age + aggregate size).
+    async fn set_retention(
+        &self,
+        id: &str,
+        settings: RetentionSettings,
+    ) -> Result<(), PluginMgmtError>;
+
+    /// Subscribe to newly-written log entries across *all* plugins, for live
+    /// tailing. Callers filter by `plugin_id`. A lagging receiver loses the
+    /// oldest buffered events (`RecvError::Lagged`) but never blocks the writer.
+    fn subscribe_logs(&self) -> broadcast::Receiver<PluginLogEvent>;
+}
+
+/// A single structured log entry — both the on-disk JSONL row and the unit the
+/// admin viewer / live stream surfaces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    /// RFC 3339 timestamp the entry was recorded at.
+    pub ts: String,
+    /// The dispatch invocation this entry belongs to (correlates lines with the
+    /// outcome row of the same invocation).
+    pub invocation_id: String,
+    /// `"plugin"` for a line the plugin emitted via `log`, `"outcome"` for the
+    /// host's record of how the invocation ended.
+    pub kind: String,
+    /// `debug` | `info` | `warn` | `error`.
+    pub level: String,
+    /// Stable outcome key (`InvokeOutcome::reason()`) for `kind = "outcome"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Human-readable message.
+    pub msg: String,
+}
+
+/// Filter + pagination for [`PluginManagementPort::read_logs`].
+#[derive(Debug, Clone, Default)]
+pub struct LogQuery {
+    /// Keep only entries at this level (exact match) when set.
+    pub level: Option<String>,
+    /// Keep only entries whose message contains this substring (case-insensitive).
+    pub search: Option<String>,
+    /// Number of newest-first entries to skip.
+    pub offset: usize,
+    /// Maximum number of entries to return.
+    pub limit: usize,
+}
+
+/// One page of log entries plus the total number matching the filter.
+#[derive(Debug, Clone)]
+pub struct LogPage {
+    /// Entries for this page, newest first.
+    pub entries: Vec<LogEntry>,
+    /// Total entries matching the filter (across all pages).
+    pub total: usize,
+}
+
+/// Per-plugin log retention policy. Persisted next to the plugin's logs.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RetentionSettings {
+    /// Delete rotated segments older than this many days.
+    pub retention_days: u32,
+    /// Aggregate byte ceiling on kept segments for the plugin (oldest deleted
+    /// first past this).
+    pub max_bytes: u64,
+}
+
+/// A newly-written entry published on the live-tail broadcast channel.
+#[derive(Debug, Clone)]
+pub struct PluginLogEvent {
+    /// The plugin the entry belongs to (subscribers filter on this).
+    pub plugin_id: String,
+    /// The entry itself.
+    pub entry: LogEntry,
 }
 
 /// A single installed plugin's load-time metadata, as surfaced to the admin UI.

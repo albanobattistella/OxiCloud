@@ -1149,3 +1149,89 @@ details[open] summary {
     margin-top: var(--space-4);
     flex-wrap: wrap;
 }
+
+/* ── Plugin detail page ── */
+.plugin-detail-meta {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--space-2) var(--space-4);
+    margin: 0;
+}
+.plugin-detail-meta dt {
+    color: var(--color-text-subtle);
+    font-weight: var(--weight-semibold);
+}
+.plugin-detail-meta dd {
+    margin: 0;
+}
+
+.plugin-logs-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2-5);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-3);
+}
+.plugin-logs-toolbar .form-control {
+    width: auto;
+}
+.plugin-logs-toolbar #plugin-logs-search {
+    flex: 1 1 200px;
+    min-width: 160px;
+}
+.plugin-logs-live {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1-5);
+    color: var(--color-text-subtle);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+}
+
+.plugin-log-level {
+    display: inline-block;
+    text-transform: uppercase;
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-semibold);
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-md);
+}
+.plugin-log-level--debug {
+    background: var(--color-border-light);
+    color: var(--color-text-subtle);
+}
+.plugin-log-level--info {
+    background: var(--color-badge-blue-bg);
+    color: var(--color-badge-blue-text);
+}
+.plugin-log-level--warn {
+    background: var(--color-warning-bg-light);
+    color: var(--color-badge-warning-text);
+}
+.plugin-log-level--error {
+    background: var(--color-error-bg);
+    color: var(--color-error-text-dark);
+}
+
+.plugin-log-ts,
+.plugin-log-inv {
+    color: var(--color-text-subtle);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+}
+.plugin-log-msg {
+    word-break: break-word;
+}
+
+/* Brief highlight when a row arrives via the live stream. */
+.plugin-log-row--new {
+    animation: plugin-log-flash 1.2s ease-out;
+}
+@keyframes plugin-log-flash {
+    from {
+        background: var(--color-badge-blue-bg);
+    }
+    to {
+        background: transparent;
+    }
+}

@@ -71,6 +71,27 @@ impl InvokeOutcome {
         matches!(self, InvokeOutcome::Ok)
     }
 
+    /// The `(level, message)` to record for this outcome in a plugin's log file.
+    /// `Ok` is an `info` "completed"; every contained failure is a `warn`/`error`
+    /// carrying its detail. The stable machine key is [`InvokeOutcome::reason`].
+    pub fn log_detail(&self) -> (&'static str, String) {
+        match self {
+            InvokeOutcome::Ok => ("info", "invocation completed".to_string()),
+            InvokeOutcome::PluginError(e) => ("warn", e.clone()),
+            InvokeOutcome::Trap(e) => ("error", e.clone()),
+            InvokeOutcome::Timeout => ("error", "wall-clock timeout".to_string()),
+            InvokeOutcome::LoadError(e) => ("error", e.clone()),
+            InvokeOutcome::AbiMismatch { got } => {
+                ("error", format!("abi mismatch: plugin reported {got}"))
+            }
+            InvokeOutcome::MissingExport(s) => ("error", format!("missing export: {s}")),
+            InvokeOutcome::MalformedOutput(e) => ("warn", e.clone()),
+            InvokeOutcome::MalformedInput { size, max } => {
+                ("warn", format!("input too large: {size} bytes (max {max})"))
+            }
+        }
+    }
+
     /// Stable, machine-readable key for audit logs.
     pub fn reason(&self) -> &'static str {
         match self {

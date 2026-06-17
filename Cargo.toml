@@ -10,7 +10,7 @@ mimalloc = { version = "0.1.52", default-features = false }
 axum = { version = "0.8.9", features = ["multipart", "http1", "http2", "tokio", "macros"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync", "fs"] }
 tokio-util = { version = "0.7.18", features = ["io", "codec", "compat"] }
-tokio-stream = { version = "0.1.18", features = ["fs"] }
+tokio-stream = { version = "0.1.18", features = ["fs", "sync"] }
 bytes = "1.11.1"
 tempfile = "3.27.0"
 tower = "0.5.3"
@@ -80,6 +80,7 @@ pdf-extract = "0.10.0"
 nom-exif = "3.6.1"
 extism = { version = "1.30.0", optional = true }
 toml = { version = "1.1.2", optional = true }
+file-rotate = { version = "0.7.6", optional = true }
 
 [features]
 default = []
@@ -87,7 +88,7 @@ test_utils = ["mockall"]
 integration_tests = []
 # WASM plugin runtime (Extism). Opt-in: bundles wasmtime, a large engine most
 # deployments won't use. Activation also requires OXICLOUD_ENABLE_PLUGINS=true.
-plugins = ["dep:extism", "dep:toml"]
+plugins = ["dep:extism", "dep:toml", "dep:file-rotate"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(integration_tests)'] }

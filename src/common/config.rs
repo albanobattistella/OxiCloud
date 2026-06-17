@@ -961,6 +961,25 @@ pub struct PluginConfig {
     /// Hard cap on the serialized event payload handed to a plugin. Default:
     /// 256 KiB. Env: `OXICLOUD_PLUGIN_MAX_INPUT_BYTES`.
     pub max_input_bytes: usize,
+    /// Directory under which per-plugin log files live (one subdir per plugin id,
+    /// holding `events.jsonl` + rotated `events.jsonl.<ts>.gz` + `retention.json`).
+    /// Default: `{storage_path}/.plugin-logs`. Env: `OXICLOUD_PLUGIN_LOG_DIR`.
+    pub log_dir: Option<PathBuf>,
+    /// Size at which a plugin's active `events.jsonl` is rotated into a new gzip
+    /// segment. Default: 5 MiB. Env: `OXICLOUD_PLUGIN_LOG_MAX_FILE_BYTES`.
+    pub log_max_file_bytes: u64,
+    /// Coarse ceiling on the number of rotated `.gz` segments kept per plugin
+    /// (file-rotate `FileLimit::MaxFiles`); the real limits are the per-plugin
+    /// retention sweep. Default: 10. Env: `OXICLOUD_PLUGIN_LOG_MAX_SEGMENTS`.
+    pub log_max_segments: u32,
+    /// Default age (in days) past which a plugin's rotated log segments are
+    /// pruned by the maintenance sweep. Overridable per plugin via its
+    /// `retention.json`. Default: 30. Env: `OXICLOUD_PLUGIN_LOG_RETENTION_DAYS`.
+    pub log_retention_days: u32,
+    /// Default aggregate byte cap on kept log segments for a single plugin; the
+    /// sweep deletes oldest-first past this. Overridable per plugin. Default:
+    /// 256 MiB. Env: `OXICLOUD_PLUGIN_LOG_TOTAL_MAX_BYTES`.
+    pub log_total_max_bytes: u64,
 }
 
 impl Default for PluginConfig {
@@ -971,6 +990,11 @@ impl Default for PluginConfig {
             invocation_timeout_ms: 250,
             max_memory_pages: 256,
             max_input_bytes: 256 * 1024,
+            log_dir: None,
+            log_max_file_bytes: 5 * 1024 * 1024,
+            log_max_segments: 10,
+            log_retention_days: 30,
+            log_total_max_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -1385,6 +1409,31 @@ impl AppConfig {
             && let Ok(val) = v
         {
             config.plugins.max_input_bytes = val;
+        }
+        if let Ok(dir) = env::var("OXICLOUD_PLUGIN_LOG_DIR")
+            && !dir.trim().is_empty()
+        {
+            config.plugins.log_dir = Some(PathBuf::from(dir.trim()));
+        }
+        if let Ok(v) = env::var("OXICLOUD_PLUGIN_LOG_MAX_FILE_BYTES").map(|v| v.parse::<u64>())
+            && let Ok(val) = v
+        {
+            config.plugins.log_max_file_bytes = val;
+        }
+        if let Ok(v) = env::var("OXICLOUD_PLUGIN_LOG_MAX_SEGMENTS").map(|v| v.parse::<u32>())
+            && let Ok(val) = v
+        {
+            config.plugins.log_max_segments = val;
+        }
+        if let Ok(v) = env::var("OXICLOUD_PLUGIN_LOG_RETENTION_DAYS").map(|v| v.parse::<u32>())
+            && let Ok(val) = v
+        {
+            config.plugins.log_retention_days = val;
+        }
+        if let Ok(v) = env::var("OXICLOUD_PLUGIN_LOG_TOTAL_MAX_BYTES").map(|v| v.parse::<u64>())
+            && let Ok(val) = v
+        {
+            config.plugins.log_total_max_bytes = val;
         }
 
         if let Ok(v) = env::var("OXICLOUD_EXPOSE_SYSTEM_USERS").map(|v| v.parse::<bool>())

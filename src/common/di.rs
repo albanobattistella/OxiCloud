@@ -613,9 +613,18 @@ impl AppServiceFactory {
                     .plugins_dir
                     .clone()
                     .unwrap_or_else(|| self.config.storage_path.join(".plugins"));
+
+                // Resolve the log root to a sibling of the plugins dir by default
+                // so an uninstall never wipes another plugin's logs, and pass it
+                // into the manager via the config it owns.
+                let mut plugin_config = self.config.plugins.clone();
+                if plugin_config.log_dir.is_none() {
+                    plugin_config.log_dir = Some(self.config.storage_path.join(".plugin-logs"));
+                }
+
                 let manager = Arc::new(
                     crate::infrastructure::services::plugins::ExtismPluginManager::load_from_dir(
-                        self.config.plugins.clone(),
+                        plugin_config,
                         &dir,
                     ),
                 );
@@ -624,11 +633,23 @@ impl AppServiceFactory {
                     loaded = manager.loaded_count(),
                     "plugin manager initialized"
                 );
+
                 let dispatch: Arc<dyn crate::application::ports::plugin_ports::PluginDispatchPort> =
                     manager.clone();
                 let management: Arc<
                     dyn crate::application::ports::plugin_ports::PluginManagementPort,
-                > = manager;
+                > = manager.clone();
+
+                // Background maintenance: prune each plugin's rotated log
+                // segments by age + aggregate size on a schedule. Depends only on
+                // the log store + the management port, so no special ordering.
+                crate::infrastructure::services::plugins::PluginLogMaintenanceService::new(
+                    manager.log_store(),
+                    management.clone(),
+                    6, // hours between sweeps
+                )
+                .start();
+
                 return (Some(dispatch), Some(management));
             }
         }

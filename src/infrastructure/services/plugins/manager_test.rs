@@ -246,3 +246,51 @@ fn remove_unloads_and_deletes_directory() {
     let err = mgr.remove("com.example.hello").unwrap_err();
     assert_eq!(err.reason(), "not_found");
 }
+
+/// Regression guard: dispatch must persist a log entry for *every* invocation,
+/// including a successful one (it previously only logged failures). We dispatch
+/// a `file.uploaded` event and then poll the plugin's structured log until an
+/// `outcome` row appears.
+#[tokio::test(flavor = "multi_thread")]
+async fn dispatch_writes_outcome_row_on_success() {
+    use crate::application::ports::plugin_ports::{EVENT_FILE_UPLOADED, LogQuery, PluginEvent};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = ExtismPluginManager::load_from_dir(cfg(), tmp.path());
+    mgr.install(&hello_manifest(), fixture("hello.wasm"))
+        .unwrap();
+
+    mgr.dispatch(PluginEvent {
+        name: EVENT_FILE_UPLOADED,
+        user_id: None,
+        invocation_id: "test-invocation".to_string(),
+        payload: serde_json::json!({ "path": "/x.txt", "size": 1, "mime": "text/plain" }),
+    });
+
+    // dispatch is fire-and-forget on the blocking pool, and the log write is an
+    // ordered async hand-off; poll until the outcome row is durable.
+    let mut found = false;
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let page = mgr
+            .read_logs(
+                "com.example.hello",
+                LogQuery {
+                    level: None,
+                    search: None,
+                    offset: 0,
+                    limit: 100,
+                },
+            )
+            .await
+            .unwrap();
+        if page.entries.iter().any(|e| e.kind == "outcome") {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "dispatch should persist an outcome row for the invocation"
+    );
+}

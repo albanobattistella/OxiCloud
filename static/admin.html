@@ -737,6 +737,89 @@
                             </div>
                         </div>
                     </div>
+
+                    <div id="plugin-detail-view" class="hidden">
+                        <button id="plugin-detail-back" class="btn btn-secondary btn-sm" style="margin-bottom:14px;">
+                            <i class="fas fa-arrow-left"></i> <span data-i18n="admin.plugins_back">Back to plugins</span>
+                        </button>
+
+                        <div class="admin-card">
+                            <h2>
+                                <i class="fas fa-puzzle-piece"></i> <span id="plugin-detail-name"></span>
+                            </h2>
+                            <dl class="plugin-detail-meta" id="plugin-detail-meta"></dl>
+                        </div>
+
+                        <div class="admin-card">
+                            <h2>
+                                <i class="fas fa-clock-rotate-left"></i> <span data-i18n="admin.plugins_retention_title">Log retention</span>
+                            </h2>
+                            <p class="muted" data-i18n="admin.plugins_retention_intro">
+                                Rotated log segments older than the retention window, or beyond the size cap, are pruned on a schedule.
+                            </p>
+                            <div class="form-group">
+                                <label for="plugin-retention-days" data-i18n="admin.plugins_retention_days">Retention (days)</label>
+                                <input id="plugin-retention-days" type="number" min="0" step="1" />
+                            </div>
+                            <div class="form-group">
+                                <label for="plugin-retention-max-mb" data-i18n="admin.plugins_retention_max_mb">Max log size (MB)</label>
+                                <input id="plugin-retention-max-mb" type="number" min="0" step="1" />
+                            </div>
+                            <button id="plugin-retention-save" class="btn btn-primary">
+                                <i class="fas fa-save"></i> <span data-i18n="admin.plugins_retention_save">Save retention</span>
+                            </button>
+                            <div id="plugin-retention-result" class="alert" style="display:none; margin-top:14px;"></div>
+                        </div>
+
+                        <div class="admin-card">
+                            <h2>
+                                <i class="fas fa-list"></i> <span data-i18n="admin.plugins_logs_title">Logs</span>
+                            </h2>
+                            <div class="plugin-logs-toolbar">
+                                <select id="plugin-logs-level" class="form-control">
+                                    <option value="" data-i18n="admin.plugins_logs_level_all">All levels</option>
+                                    <option value="debug">debug</option>
+                                    <option value="info">info</option>
+                                    <option value="warn">warn</option>
+                                    <option value="error">error</option>
+                                </select>
+                                <input id="plugin-logs-search" type="search" class="form-control" data-i18n-placeholder="admin.plugins_logs_search" placeholder="Search messages…" />
+                                <label class="plugin-logs-live">
+                                    <input id="plugin-logs-live" type="checkbox" checked />
+                                    <span data-i18n="admin.plugins_logs_live">Live</span>
+                                </label>
+                                <button id="plugin-logs-refresh" class="btn btn-sm btn-secondary" title="Refresh">
+                                    <i class="fas fa-sync"></i>
+                                </button>
+                                <button id="plugin-logs-clear" class="btn btn-sm btn-danger">
+                                    <i class="fas fa-trash-alt"></i> <span data-i18n="admin.plugins_logs_clear">Clear</span>
+                                </button>
+                            </div>
+                            <div class="table-wrap">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th data-i18n="admin.plugins_logs_col_time">Time</th>
+                                            <th data-i18n="admin.plugins_logs_col_level">Level</th>
+                                            <th data-i18n="admin.plugins_logs_col_kind">Kind</th>
+                                            <th data-i18n="admin.plugins_logs_col_invocation">Invocation</th>
+                                            <th data-i18n="admin.plugins_logs_col_message">Message</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="plugin-logs-tbody"></tbody>
+                                </table>
+                            </div>
+                            <div class="pagination">
+                                <span id="plugin-logs-info" class="muted"></span>
+                                <button id="plugin-logs-prev" class="btn btn-sm btn-secondary">
+                                    <i class="fas fa-chevron-left"></i>
+                                </button>
+                                <button id="plugin-logs-next" class="btn btn-sm btn-secondary">
+                                    <i class="fas fa-chevron-right"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

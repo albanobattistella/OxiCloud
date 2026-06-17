@@ -5,10 +5,14 @@
 //! [`crate::application::ports::plugin_ports::PluginDispatchPort`] trait, so the
 //! Extism types here never leak past the infrastructure boundary.
 
+pub mod log_retention_service;
+pub mod log_store;
 pub mod manager;
 pub mod manifest;
 pub mod runtime;
 
+pub use log_retention_service::PluginLogMaintenanceService;
+pub use log_store::PluginLogStore;
 pub use manager::ExtismPluginManager;
 
 #[cfg(test)]

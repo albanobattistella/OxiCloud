@@ -2,18 +2,24 @@ use axum::{
     Router,
     extract::{Json, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{delete, get, post, put},
 };
 
-use crate::application::dtos::plugin_dto::{PluginInfoDto, SetEnabledDto};
+use crate::application::dtos::plugin_dto::{
+    PluginInfoDto, PluginLogEntryDto, PluginLogPageDto, PluginLogQueryDto, PluginRetentionDto,
+    SetEnabledDto,
+};
 use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, ListUsersQueryDto,
     MigrationStateDto, SaveOidcSettingsDto, SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto,
     SmtpTestResultDto, StartMigrationDto, TestOidcConnectionDto, TestStorageConnectionDto,
     UpdateUserActiveDto, UpdateUserQuotaDto, UpdateUserRoleDto, VerifyMigrationDto,
 };
-use crate::application::ports::plugin_ports::{PluginManagementPort, PluginMgmtError};
+use crate::application::ports::plugin_ports::{LogQuery, PluginManagementPort, PluginMgmtError};
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::admin::require_admin;
@@ -67,6 +73,12 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/plugins", post(install_plugin))
         .route("/plugins/{id}/enabled", put(set_plugin_enabled))
         .route("/plugins/{id}", delete(delete_plugin))
+        // Plugin logs + per-plugin retention
+        .route("/plugins/{id}/logs", get(get_plugin_logs))
+        .route("/plugins/{id}/logs", delete(clear_plugin_logs))
+        .route("/plugins/{id}/logs/stream", get(stream_plugin_logs))
+        .route("/plugins/{id}/retention", get(get_plugin_retention))
+        .route("/plugins/{id}/retention", put(set_plugin_retention))
         // SMTP diagnostics
         .route("/smtp/info", get(get_smtp_info))
         .route("/smtp/test", post(send_smtp_test))
@@ -1623,4 +1635,135 @@ pub async fn delete_plugin(
         StatusCode::OK,
         Json(serde_json::json!({ "message": "Plugin removed", "id": id })),
     ))
+}
+
+/// GET /api/admin/plugins/{id}/logs — a filtered, paginated page of a plugin's
+/// structured log entries (newest first).
+pub async fn get_plugin_logs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<PluginLogQueryDto>,
+) -> Result<impl IntoResponse, AppError> {
+    admin_guard(&state, &headers).await?;
+    let mgmt = plugin_mgmt(&state)?;
+
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let offset = q.offset.unwrap_or(0);
+    let page = mgmt
+        .read_logs(
+            &id,
+            LogQuery {
+                level: q.level,
+                search: q.search,
+                offset,
+                limit,
+            },
+        )
+        .await
+        .map_err(|e| map_mgmt_err(&e))?;
+
+    Ok(Json(PluginLogPageDto::from_page(page, limit, offset)))
+}
+
+/// DELETE /api/admin/plugins/{id}/logs — wipe a plugin's persisted logs.
+pub async fn clear_plugin_logs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let (admin_id, _) = admin_guard(&state, &headers).await?;
+    let mgmt = plugin_mgmt(&state)?;
+    mgmt.clear_logs(&id).await.map_err(|e| map_mgmt_err(&e))?;
+
+    tracing::info!(
+        target: "audit",
+        event = "plugin.logs_cleared",
+        plugin_id = %id,
+        admin_id = %admin_id,
+        "👮🏻‍♂️ plugin logs cleared by admin"
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "message": "Plugin logs cleared", "id": id })),
+    ))
+}
+
+/// GET /api/admin/plugins/{id}/logs/stream — Server-Sent Events live tail. Each
+/// `message` event carries one new log entry (JSON); a `lagged` event signals
+/// the client should resync after falling behind. Auth rides the access cookie,
+/// so `EventSource` works without setting headers.
+pub async fn stream_plugin_logs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    use tokio_stream::StreamExt;
+    use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
+
+    admin_guard(&state, &headers).await?;
+    let mgmt = plugin_mgmt(&state)?;
+    if !mgmt.list().iter().any(|p| p.id == id) {
+        return Err(AppError::not_found("Plugin not found"));
+    }
+
+    let rx = mgmt.subscribe_logs();
+    let want = id;
+    let stream = BroadcastStream::new(rx).filter_map(move |res| match res {
+        Ok(ev) if ev.plugin_id == want => {
+            let dto = PluginLogEntryDto::from(ev.entry);
+            let event = Event::default()
+                .json_data(&dto)
+                .unwrap_or_else(|_| Event::default().comment("serialize error"));
+            Some(Ok::<Event, std::convert::Infallible>(event))
+        }
+        Ok(_) => None,
+        Err(BroadcastStreamRecvError::Lagged(n)) => {
+            Some(Ok(Event::default().event("lagged").data(n.to_string())))
+        }
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// GET /api/admin/plugins/{id}/retention — the plugin's effective retention.
+pub async fn get_plugin_retention(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    admin_guard(&state, &headers).await?;
+    let mgmt = plugin_mgmt(&state)?;
+    let settings = mgmt
+        .get_retention(&id)
+        .await
+        .map_err(|e| map_mgmt_err(&e))?;
+    Ok(Json(PluginRetentionDto::from(settings)))
+}
+
+/// PUT /api/admin/plugins/{id}/retention — set the plugin's retention policy.
+pub async fn set_plugin_retention(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(dto): Json<PluginRetentionDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let (admin_id, _) = admin_guard(&state, &headers).await?;
+    let mgmt = plugin_mgmt(&state)?;
+    mgmt.set_retention(&id, dto.into())
+        .await
+        .map_err(|e| map_mgmt_err(&e))?;
+
+    tracing::info!(
+        target: "audit",
+        event = "plugin.retention_updated",
+        plugin_id = %id,
+        admin_id = %admin_id,
+        retention_days = dto.retention_days,
+        max_bytes = dto.max_bytes,
+        "👮🏻‍♂️ plugin log retention updated by admin"
+    );
+
+    Ok((StatusCode::OK, Json(dto)))
 }

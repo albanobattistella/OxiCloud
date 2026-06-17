@@ -18,13 +18,18 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use async_trait::async_trait;
+
+use super::log_store::PluginLogStore;
 use super::manifest;
 use super::runtime::{InvokeOutcome, PluginRuntime};
 use crate::application::ports::plugin_ports::{
-    OXICLOUD_PLUGIN_ABI, PluginContext, PluginDispatchPort, PluginEvent, PluginInfo, PluginInput,
-    PluginManagementPort, PluginMgmtError, event_export_name,
+    LogPage, LogQuery, OXICLOUD_PLUGIN_ABI, PluginContext, PluginDispatchPort, PluginEvent,
+    PluginInfo, PluginInput, PluginLogEvent, PluginManagementPort, PluginMgmtError,
+    RetentionSettings, event_export_name,
 };
 use crate::common::config::PluginConfig;
+use tokio::sync::broadcast;
 
 /// Name of the marker file that, when present in a plugin's directory, loads it
 /// disabled. Created/removed by [`PluginManagementPort::set_enabled`].
@@ -67,6 +72,8 @@ pub struct ExtismPluginManager {
     /// Root directory plugins are discovered in and installed into.
     root_dir: PathBuf,
     plugins: RwLock<Vec<LoadedPlugin>>,
+    /// Per-plugin structured log storage (shared with the maintenance task).
+    log_store: Arc<PluginLogStore>,
 }
 
 impl ExtismPluginManager {
@@ -74,6 +81,23 @@ impl ExtismPluginManager {
     /// load. Returns an empty manager (logging the cause) if `dir` is absent or
     /// unreadable — a missing plugins directory is normal, not an error.
     pub fn load_from_dir(config: PluginConfig, dir: &Path) -> Self {
+        // The log root is a sibling of the plugins dir by default (or the
+        // configured override); it lives outside any individual plugin dir so a
+        // plugin uninstall (`remove_dir_all`) never wipes another's logs.
+        let log_dir = config
+            .log_dir
+            .clone()
+            .unwrap_or_else(|| dir.join(".plugin-logs"));
+        let log_store = Arc::new(PluginLogStore::new(
+            log_dir.clone(),
+            config.log_max_file_bytes,
+            config.log_max_segments,
+            RetentionSettings {
+                retention_days: config.log_retention_days,
+                max_bytes: config.log_total_max_bytes,
+            },
+        ));
+
         let mut plugins = Vec::new();
         let mut rejected = 0usize;
 
@@ -90,6 +114,7 @@ impl ExtismPluginManager {
                     config,
                     root_dir: dir.to_path_buf(),
                     plugins: RwLock::new(plugins),
+                    log_store,
                 };
             }
         };
@@ -97,6 +122,10 @@ impl ExtismPluginManager {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
+                continue;
+            }
+            // Never treat the log root as a plugin directory.
+            if path == log_dir {
                 continue;
             }
             match Self::load_one(&config, &path) {
@@ -134,7 +163,13 @@ impl ExtismPluginManager {
             config,
             root_dir: dir.to_path_buf(),
             plugins: RwLock::new(plugins),
+            log_store,
         }
+    }
+
+    /// The shared log store, handed to the maintenance task by DI.
+    pub fn log_store(&self) -> Arc<PluginLogStore> {
+        self.log_store.clone()
     }
 
     /// Validate and load a single plugin directory. Returns a stable audit
@@ -201,6 +236,17 @@ impl ExtismPluginManager {
     fn write_plugins(&self) -> std::sync::RwLockWriteGuard<'_, Vec<LoadedPlugin>> {
         self.plugins.write().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// `NotFound` unless a plugin with this id is currently installed. Checked
+    /// before any log-file access so an HTTP-supplied id can't reach the
+    /// filesystem for a plugin that doesn't exist.
+    fn ensure_installed(&self, id: &str) -> Result<(), PluginMgmtError> {
+        if self.read_plugins().iter().any(|p| p.id == id) {
+            Ok(())
+        } else {
+            Err(PluginMgmtError::NotFound)
+        }
+    }
 }
 
 impl PluginDispatchPort for ExtismPluginManager {
@@ -238,11 +284,16 @@ impl PluginDispatchPort for ExtismPluginManager {
             let plugin_id = plugin.id.clone();
             let invocation_id = event.invocation_id.clone();
             let export = event_export_name(event.name);
+            let log_store = self.log_store.clone();
 
             // Run the synchronous wasm call off the async workers. Fire-and-forget:
             // the upload already succeeded; plugins are post-hoc observers.
             tokio::task::spawn_blocking(move || {
                 let result = runtime.invoke(&config, &export, &invocation_id, &input_json);
+                // Persist every invocation (the plugin's own log lines plus the
+                // host outcome) to the plugin's structured log. Ordered, async,
+                // and non-fatal — a failed write never affects the request.
+                log_store.append(&plugin_id, &invocation_id, &result.logs, &result.outcome);
                 if !result.outcome.is_ok() {
                     tracing::warn!(
                         target: "audit",
@@ -265,6 +316,7 @@ impl PluginDispatchPort for ExtismPluginManager {
     }
 }
 
+#[async_trait]
 impl PluginManagementPort for ExtismPluginManager {
     fn list(&self) -> Vec<PluginInfo> {
         let mut infos: Vec<PluginInfo> = self.read_plugins().iter().map(|p| p.info()).collect();
@@ -410,11 +462,44 @@ impl PluginManagementPort for ExtismPluginManager {
             .position(|p| p.id == id)
             .ok_or(PluginMgmtError::NotFound)?;
         let removed = plugins.remove(pos);
+        // Also reclaim the plugin's logs so a later reinstall of the same id
+        // doesn't inherit stale entries.
+        self.log_store.remove_plugin_logs(id);
         match std::fs::remove_dir_all(&removed.dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(PluginMgmtError::Io(e.to_string())),
         }
+    }
+
+    async fn read_logs(&self, id: &str, query: LogQuery) -> Result<LogPage, PluginMgmtError> {
+        self.ensure_installed(id)?;
+        Ok(self.log_store.read_page(id, query).await)
+    }
+
+    async fn clear_logs(&self, id: &str) -> Result<(), PluginMgmtError> {
+        self.ensure_installed(id)?;
+        self.log_store.clear(id).await;
+        Ok(())
+    }
+
+    async fn get_retention(&self, id: &str) -> Result<RetentionSettings, PluginMgmtError> {
+        self.ensure_installed(id)?;
+        Ok(self.log_store.get_retention(id).await)
+    }
+
+    async fn set_retention(
+        &self,
+        id: &str,
+        settings: RetentionSettings,
+    ) -> Result<(), PluginMgmtError> {
+        self.ensure_installed(id)?;
+        self.log_store.set_retention(id, settings).await;
+        Ok(())
+    }
+
+    fn subscribe_logs(&self) -> broadcast::Receiver<PluginLogEvent> {
+        self.log_store.subscribe()
     }
 }
 
