@@ -14,16 +14,16 @@ use axum::{
 use futures::future::join_all;
 use serde::Deserialize;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 use utoipa::IntoParams;
 use uuid::Uuid;
 
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::grant_dto::{
     CreateGrantDto, CreateGrantResponseDto, GrantDto, MySharesDto, NotifyOutcomeSetDto,
-    OutgoingResourceGrantDto, OutgoingResourceItemDto, PermissionDto, ResourceContentDto,
-    ResourceDto, ResourceTypeDto, SharedWithMeDto, SharedWithMeItemDto, SharedWithMeQuery,
-    SubjectDto, SubjectInputDto, UpdateRoleDto, role_from_permissions,
+    OutgoingResourceGrantDto, OutgoingResourceItemDto, ResourceContentDto, ResourceDto,
+    ResourceTypeDto, SharedWithMeDto, SharedWithMeItemDto, SharedWithMeQuery, SubjectDto,
+    SubjectInputDto, UpdateRoleDto, role_from_permissions,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
@@ -35,7 +35,7 @@ use crate::common::errors::DomainError;
 use crate::domain::errors::ErrorKind;
 use crate::domain::services::authorization::{
     GrantCursor, IncomingGrantSummary, OutgoingResourceSummary, Permission, Resource, ResourceKind,
-    Subject,
+    Role, Subject,
 };
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
@@ -66,28 +66,7 @@ pub async fn create_grant(
     let authz = &state.authorization;
     let caller_id = auth_user.id;
 
-    // Validate: exactly one of permissions/role
-    let permissions: Vec<Permission> = match (dto.permissions, dto.role) {
-        (Some(perms), None) if !perms.is_empty() => perms.into_iter().map(Into::into).collect(),
-        (None, Some(role)) => role.expand().to_vec(),
-        (Some(_), Some(_)) => {
-            return AppError::new(
-                StatusCode::BAD_REQUEST,
-                "Provide either 'permissions' or 'role', not both",
-                "InvalidInput",
-            )
-            .into_response();
-        }
-        _ => {
-            return AppError::new(
-                StatusCode::BAD_REQUEST,
-                "Either 'permissions' (non-empty) or 'role' is required",
-                "InvalidInput",
-            )
-            .into_response();
-        }
-    };
-
+    let role: Role = dto.role.into();
     let resource: Resource = dto.resource.into();
     let expires_at = dto.expires_at;
 
@@ -152,25 +131,32 @@ pub async fn create_grant(
         }
     };
 
-    let mut results: Vec<GrantDto> = Vec::with_capacity(permissions.len());
-    for perm in permissions {
-        match authz
-            .grant(caller_id, subject, perm, resource, expires_at)
-            .await
-        {
-            Ok(grant) => results.push(grant.into()),
-            Err(err) => {
-                error!("grant insert failed for {perm:?}: {err}");
-                return AppError::from(err).into_response();
-            }
+    // Single role row in `storage.role_grants`. `ON CONFLICT UPDATE` in
+    // the engine makes repeated POSTs with the same (subject, resource)
+    // a role refresh, matching the PATCH-style semantics callers expect.
+    let grant = match authz
+        .set_role(caller_id, subject, role, resource, expires_at)
+        .await
+    {
+        Ok(g) => g,
+        Err(err) => {
+            error!("set_role write failed: {err}");
+            return AppError::from(err).into_response();
         }
-    }
-    info!(
-        "Created {} grant(s) for subject={:?} on resource={:?} by user {}",
-        results.len(),
-        subject,
-        resource,
-        caller_id
+    };
+    let grants = vec![GrantDto::from(grant)];
+
+    tracing::info!(
+        target: "audit",
+        event = "role_grant.created",
+        caller_id = %caller_id,
+        subject_type = subject.type_str(),
+        subject_id = %subject.id(),
+        resource_type = resource.type_str(),
+        resource_id = %resource.id(),
+        role = role.as_str(),
+        expires_at = ?expires_at,
+        "🤝 grant created with role '{}'", role.as_str(),
     );
 
     // PR N1 — route the post-grant notification through the unified
@@ -240,7 +226,7 @@ pub async fn create_grant(
     (
         StatusCode::CREATED,
         Json(CreateGrantResponseDto {
-            grants: results,
+            grants,
             notification,
         }),
     )
@@ -274,17 +260,20 @@ pub async fn revoke_grant(
         Err(_) => return AppError::not_found(format!("Grant {id} not found")).into_response(),
     };
 
-    // Look up the grant to find the underlying resource (and granter).
-    let on_resource = match authz.find_grant_by_id(grant_id).await {
-        Ok(Some((res, granter))) => (res, granter),
+    // Look up the grant to find the subject, resource, and granter.
+    // `find_grant_full_by_id` returns the subject too — needed for the
+    // `clear_role` dual-write below (role_grants is keyed by (subject,
+    // resource), not by access_grants id).
+    let (subject, resource, granter) = match authz.find_grant_full_by_id(grant_id).await {
+        Ok(Some(triple)) => triple,
         Ok(None) => return StatusCode::NO_CONTENT.into_response(), // idempotent
         Err(e) => return AppError::from(e).into_response(),
     };
 
     // Caller is authorized if they are the granter OR have Share on the resource.
-    if on_resource.1 != caller_id
+    if granter != caller_id
         && let Err(e) = authz
-            .require(Subject::User(caller_id), Permission::Share, on_resource.0)
+            .require(Subject::User(caller_id), Permission::Share, resource)
             .await
     {
         return AppError::from(e).into_response();
@@ -293,7 +282,36 @@ pub async fn revoke_grant(
     if let Err(e) = authz.revoke(grant_id).await {
         return AppError::from(e).into_response();
     }
-    info!("Revoked grant {grant_id} (caller {caller_id})");
+
+    // D-Prep dual-write: clear the role_grants row for this (subject,
+    // resource). Idempotent — succeeds whether or not the row existed.
+    //
+    // Today's API revokes one access_grants row by id; the role_grants
+    // row models the WHOLE (subject, resource) cluster. Calling clear_role
+    // here effectively revokes the WHOLE role assignment in role_grants,
+    // even if other per-permission access_grants rows remain. This is the
+    // correct semantics for the eventual cleanup-PR model (role_grants is
+    // role-keyed; once access_grants goes away, "revoke" means "drop the
+    // role"). During the dual-write window the two tables can drift
+    // briefly if a caller revokes only some permissions of a role, but
+    // the engine still reads access_grants so behaviour is unchanged.
+    if let Err(e) = authz.clear_role(subject, resource).await {
+        return AppError::from(e).into_response();
+    }
+
+    tracing::info!(
+        target: "audit",
+        event = "role_grant.revoked",
+        caller_id = %caller_id,
+        grant_id = %grant_id,
+        subject_type = subject.type_str(),
+        subject_id = %subject.id(),
+        resource_type = resource.type_str(),
+        resource_id = %resource.id(),
+        granter_id = %granter,
+        self_revoke = (granter == caller_id),
+        "🗑️ grant revoked",
+    );
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -486,9 +504,8 @@ pub async fn set_role(
     let caller_id = auth_user.id;
     let subject: Subject = dto.subject.into();
     let resource: Resource = dto.resource.into();
+    let role: Role = dto.role.into();
     let expires_at = dto.expires_at;
-    let target_perms: std::collections::HashSet<Permission> =
-        dto.role.expand().iter().copied().collect();
 
     // Caller must have Share on the resource.
     if let Err(e) = authz
@@ -498,84 +515,41 @@ pub async fn set_role(
         return AppError::from(e).into_response();
     }
 
-    // Fetch current grants on the resource for this subject.
-    let current = match authz.list_grants_on_resource(resource).await {
-        Ok(g) => g,
-        Err(e) => return AppError::from(e).into_response(),
-    };
-    let current_perms: std::collections::HashSet<Permission> = current
-        .iter()
-        .filter(|g| g.subject == subject)
-        .map(|g| g.permission)
-        .collect();
-
-    // Diff and apply.
-    let to_add: Vec<Permission> = target_perms.difference(&current_perms).copied().collect();
-    let to_remove: Vec<Permission> = current_perms.difference(&target_perms).copied().collect();
-
-    for perm in &to_remove {
-        if let Some(g) = current
-            .iter()
-            .find(|g| g.subject == subject && g.permission == *perm)
-            && let Err(e) = authz.revoke(g.id).await
-        {
-            return AppError::from(e).into_response();
-        }
-    }
-    for perm in &to_add {
-        if let Err(e) = authz
-            .grant(caller_id, subject, *perm, resource, expires_at)
-            .await
-        {
-            return AppError::from(e).into_response();
-        }
-    }
-
-    // Sync expiry on all remaining grants for this (subject, resource) pair —
-    // includes newly added ones and any that were already present (retained).
-    // Callers that omit expires_at will clear any existing expiry; this is
-    // intentional: it keeps all permission rows for the pair consistent.
-    if let Err(e) = authz
-        .set_expiry_on_resource(subject, resource, expires_at)
+    // Atomic role refresh. UNIQUE on (subject, resource) + ON CONFLICT
+    // UPDATE in `set_role` turns this into a single UPSERT — no diff,
+    // no race window. Returns the resulting role row.
+    let grant = match authz
+        .set_role(caller_id, subject, role, resource, expires_at)
         .await
     {
-        return AppError::from(e).into_response();
-    }
-
-    // Return the new full set.
-    let after = match authz.list_grants_on_resource(resource).await {
         Ok(g) => g,
         Err(e) => return AppError::from(e).into_response(),
     };
-    let mine: Vec<GrantDto> = after
-        .into_iter()
-        .filter(|g| g.subject == subject)
-        .map(Into::into)
-        .collect();
 
-    info!(
-        "Role applied: caller={} subject={:?} resource={:?} added={:?} removed={:?}",
-        caller_id, subject, resource, to_add, to_remove
+    tracing::info!(
+        target: "audit",
+        event = "role_grant.role_set",
+        caller_id = %caller_id,
+        subject_type = subject.type_str(),
+        subject_id = %subject.id(),
+        resource_type = resource.type_str(),
+        resource_id = %resource.id(),
+        role = role.as_str(),
+        expires_at = ?expires_at,
+        "🔁 role set to '{}'", role.as_str(),
     );
-    (StatusCode::OK, Json(mine)).into_response()
+    (StatusCode::OK, Json(vec![GrantDto::from(grant)])).into_response()
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // GET /api/grants/incoming
 // ════════════════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Deserialize, IntoParams)]
-pub struct IncomingQuery {
-    #[serde(default)]
-    pub permission: Option<PermissionDto>,
-}
-
 #[utoipa::path(
     get,
     path = "/api/grants/incoming",
-    params(IncomingQuery),
     responses(
-        (status = 200, description = "Direct grants targeting the caller", body = Vec<GrantDto>),
+        (status = 200, description = "Direct role grants targeting the caller", body = Vec<GrantDto>),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"
@@ -583,12 +557,11 @@ pub struct IncomingQuery {
 pub async fn list_incoming(
     State(state): State<AppStateRef>,
     auth_user: AuthUser,
-    Query(q): Query<IncomingQuery>,
 ) -> impl IntoResponse {
     let caller_id = auth_user.id;
     match state
         .authorization
-        .list_incoming_grants(Subject::User(caller_id), q.permission.map(Into::into))
+        .list_incoming_grants(Subject::User(caller_id))
         .await
     {
         Ok(grants) => {
