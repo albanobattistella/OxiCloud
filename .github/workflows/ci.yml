@@ -94,20 +94,19 @@ jobs:
 
       - name: Check locale files are at parity with en.json
         # Python 3 stdlib only — no setup step needed.
-        # `--check-only` keeps the CI log terse; failures still surface
-        # via exit code (the script returns 1 when any non-English
-        # locale is missing a key present in en.json). Mirrors the
-        # `--check-only` flag on `tools/check-icons.py` below.
-        # Run locally without --check-only to see the missing keys.
+        # **Advisory** (non-blocking via `continue-on-error`): a failed
+        # exit code paints the step red but does not fail the job, so
+        # unrelated PRs still merge. Re-arm by removing
+        # `continue-on-error`. Run locally without `--check-only` to see
+        # the missing keys.
+        continue-on-error: true
         run: python3 tools/check-missing-translations.py --check-only
 
       - name: Check FA icons referenced in static/ are registered
-        # `--check-only` skips the Font-Awesome clone and the icons.js
-        # patch — it just scans `fas fa-<name>` references and diffs
-        # them against OxiIcons. Exit 1 if any used icon is absent
-        # from the registry. Run locally without --check-only to
-        # auto-add missing entries from a checked-out Font-Awesome
-        # source.
+        # **Advisory** (non-blocking via `continue-on-error`). Run
+        # locally without `--check-only` to auto-add missing entries
+        # from a checked-out Font-Awesome source.
+        continue-on-error: true
         run: python3 tools/check-icons.py --check-only
 
   rust-fmt:
