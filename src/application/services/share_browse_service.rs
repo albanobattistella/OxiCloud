@@ -186,6 +186,10 @@ impl ShareBrowseService {
         Ok(FolderListingDto {
             folders: folders_res?,
             files: files_res?,
+            // Public-share browsing is an anonymous, read-only context — no
+            // per-caller favorite/share badges apply.
+            favorite_ids: Vec::new(),
+            shared_ids: Vec::new(),
         })
     }
 }

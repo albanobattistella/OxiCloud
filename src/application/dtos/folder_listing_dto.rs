@@ -12,4 +12,11 @@ pub struct FolderListingDto {
     pub folders: Vec<FolderDto>,
     /// Files inside the requested folder
     pub files: Vec<FileDto>,
+    /// Ids (folders + files in this listing) the caller has favorited. Lets the
+    /// client render star badges without a separate per-navigation favorites
+    /// fetch. Sorted for a stable response / ETag.
+    pub favorite_ids: Vec<String>,
+    /// Ids in this listing the caller has an outgoing share/grant on (incl.
+    /// public links). Sorted for a stable response / ETag.
+    pub shared_ids: Vec<String>,
 }

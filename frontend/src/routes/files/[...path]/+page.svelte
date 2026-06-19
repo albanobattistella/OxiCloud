@@ -6,11 +6,16 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/icons/Icon.svelte';
 	import {
+		cacheFolder,
 		createFolder,
 		deleteFolder,
+		fetchFolderListing,
+		getCachedFolder,
 		getFolder,
-		listFolder,
+		getFolderName,
+		invalidateFolderCache,
 		moveFolder,
+		rememberFolderName,
 		renameFolder,
 		type FolderListing
 	} from '$lib/api/endpoints/folders';
@@ -25,8 +30,7 @@
 	} from '$lib/api/endpoints/files';
 	import { folderZipUrl } from '$lib/api/endpoints/folders';
 	import { tryDeltaUpload } from '$lib/api/endpoints/deltaUpload';
-	import { addFavorite, fetchFavoritesPage, removeFavorite } from '$lib/api/endpoints/favorites';
-	import { fetchMyShares } from '$lib/api/endpoints/grants';
+	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import { canEditWithWopi, getEditorUrlWithFallback } from '$lib/api/endpoints/wopi';
 	import { addTracks, createPlaylist, listPlaylists } from '$lib/api/endpoints/music';
 	import { apiFetch } from '$lib/api/client';
@@ -34,6 +38,7 @@
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import FileViewer from '$lib/components/FileViewer.svelte';
 	import ListToolbar from '$lib/components/ListToolbar.svelte';
+	import VirtualList from '$lib/components/VirtualList.svelte';
 	import MoveDialog from '$lib/components/MoveDialog.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import WopiEditor from '$lib/components/WopiEditor.svelte';
@@ -51,12 +56,13 @@
 	} from '$lib/stores/files.svelte';
 	import { formatBytes } from '$lib/utils/format';
 	import { formatDate, iconNameFromClass } from '$lib/utils/display';
+	import { gridColumns } from '$lib/utils/grid';
 
 	// The URL rest param is the trail of folder ids from home's children down.
 	// /files → home root; /files/a/b → folder b inside a inside home.
 	const pathSegments = $derived((page.params.path ?? '').split('/').filter((s) => s.length > 0));
 
-	let listing = $state<FolderListing>({ folders: [], files: [] });
+	let listing = $state<FolderListing>({ folders: [], files: [], favoriteIds: [], sharedIds: [] });
 	let crumbs = $state<Array<{ id: string; name: string }>>([]);
 	let currentId = $state<string | null>(null);
 	let loading = $state(false);
@@ -78,7 +84,9 @@
 	let actionTarget = $state<ActionTarget | null>(null);
 	let moveItems = $state<ActionTarget[] | null>(null);
 
-	// Favorite + shared badges for items in the current folder.
+	// Favorite + shared badge sets for the current folder, seeded directly from
+	// the listing response (server-computed, scoped to these items — no extra
+	// per-navigation fetch) and updated optimistically on mutation.
 	let favoriteIds = $state<Set<string>>(new Set());
 	let sharedIds = $state<Set<string>>(new Set());
 
@@ -99,23 +107,9 @@
 		shareOpen = true;
 	}
 
-	/** Load favorite + outgoing-share id sets so items can show badges. */
-	async function loadBadges() {
-		try {
-			const [favs, shares] = await Promise.all([
-				fetchFavoritesPage({ limit: 200 }).catch(() => null),
-				fetchMyShares({ limit: 200 }).catch(() => null)
-			]);
-			favoriteIds = new Set((favs?.items ?? []).map((f) => f.resource.id));
-			sharedIds = new Set((shares?.items ?? []).map((s) => s.resource.id));
-		} catch {
-			/* badges are best-effort */
-		}
-	}
-
 	async function toggleFavorite(kind: ItemType, id: string) {
 		const isFav = favoriteIds.has(id);
-		// Optimistic toggle, reconcile on failure.
+		// Optimistic toggle, reverted on failure.
 		const next = new Set(favoriteIds);
 		if (isFav) next.delete(id);
 		else next.add(id);
@@ -125,63 +119,114 @@
 			else await addFavorite(kind, id);
 		} catch (e) {
 			errorToast(e);
-			await loadBadges();
+			const reverted = new Set(favoriteIds);
+			if (isFav) reverted.add(id);
+			else reverted.delete(id);
+			favoriteIds = reverted;
 		}
 	}
 
 	async function buildCrumbs(segments: string[]): Promise<Array<{ id: string; name: string }>> {
-		// Names for each id in the trail; tolerate failures with a fallback label.
-		const metas = await Promise.all(
-			segments.map((id) =>
-				getFolder(id)
-					.then((f) => ({ id, name: f.name }))
-					.catch(() => ({ id, name: '…' }))
-			)
+		// Names come from the cache first (every listing names its children, so
+		// step-by-step navigation needs zero requests); only ids we've never seen
+		// — a cold deep-link's ancestors — are fetched, in parallel.
+		return Promise.all(
+			segments.map(async (id) => {
+				const known = getFolderName(id);
+				if (known !== undefined) return { id, name: known };
+				try {
+					const f = await getFolder(id);
+					return { id, name: f.name };
+				} catch {
+					return { id, name: '…' };
+				}
+			})
 		);
-		return metas;
+	}
+
+	// Bumped on every load; a stale in-flight response checks this before it
+	// writes state, so a fast navigation can't be clobbered by an older fetch.
+	let loadSeq = 0;
+
+	function applyListing(data: FolderListing) {
+		listing = data;
+		favoriteIds = new Set(data.favoriteIds);
+		sharedIds = new Set(data.sharedIds);
 	}
 
 	async function load() {
-		loading = true;
 		error = null;
-		// Arm the delayed skeleton; cancel it the moment the load settles so fast
-		// loads never flash placeholders (mirrors filesView.js' 100ms timer).
+		const seq = ++loadSeq;
+
+		// External users have no home folder; send them to shared-with-me.
+		if (session.isExternalUser && pathSegments.length === 0) {
+			await goto('/shared-with-me', { replaceState: true });
+			return;
+		}
+		const home = await session.loadHomeFolder();
+		const folderId = pathSegments.at(-1) ?? home;
+		if (!folderId) {
+			error = t('files.no_home', 'No home folder available.');
+			return;
+		}
+		currentId = folderId;
+		filesStore.currentFolder = folderId;
+
+		// Stale-while-revalidate: paint a previously-visited folder instantly,
+		// then revalidate with If-None-Match (304 = keep what's shown).
+		const cached = getCachedFolder(folderId);
+		if (cached) {
+			applyListing(cached.listing);
+			loading = false;
+			showSkeleton = false;
+		} else {
+			loading = true;
+		}
+		// Delayed skeleton, only when there's nothing cached to show yet.
 		const skeletonTimer = setTimeout(() => {
 			if (loading) showSkeleton = true;
 		}, 100);
+
+		// Breadcrumbs resolve independently so they never block the grid paint.
+		void buildCrumbs(pathSegments).then((trail) => {
+			if (seq === loadSeq) crumbs = trail;
+		});
+
 		try {
-			// External users have no home folder; send them to shared-with-me.
-			if (session.isExternalUser && pathSegments.length === 0) {
-				await goto('/shared-with-me', { replaceState: true });
-				return;
+			const res = await fetchFolderListing(folderId, { etag: cached?.etag });
+			if (seq !== loadSeq) return; // superseded by a newer navigation
+			if (res.status === 200 && res.listing) {
+				applyListing(res.listing);
+				cacheFolder(folderId, res.listing, res.etag);
 			}
-			const home = await session.loadHomeFolder();
-			const folderId = pathSegments.at(-1) ?? home;
-			if (!folderId) {
-				error = t('files.no_home', 'No home folder available.');
-				return;
-			}
-			currentId = folderId;
-			filesStore.currentFolder = folderId;
-			const [data, trail] = await Promise.all([listFolder(folderId), buildCrumbs(pathSegments)]);
-			listing = data;
-			crumbs = trail;
-			void loadBadges();
+			// 304 → the cached copy already on screen is current.
+			error = null;
 			maybeOpenDeepLink();
 		} catch (e) {
-			// 403 → friendly message rather than the raw "Forbidden" error string.
-			const status = (e as { status?: number })?.status;
-			error =
-				status === 403
-					? t('errors.forbidden', 'Could not load files')
-					: e instanceof Error
-						? e.message
-						: String(e);
+			if (seq !== loadSeq) return;
+			// With a cached view already shown, keep it on a transient failure.
+			if (!cached) {
+				const status = (e as { status?: number })?.status;
+				error =
+					status === 403
+						? t('errors.forbidden', 'Could not load files')
+						: e instanceof Error
+							? e.message
+							: String(e);
+			}
 		} finally {
 			clearTimeout(skeletonTimer);
-			loading = false;
-			showSkeleton = false;
+			if (seq === loadSeq) {
+				loading = false;
+				showSkeleton = false;
+			}
 		}
+	}
+
+	/** Data changed — drop cached listings and reload the current folder fresh. */
+	async function reload() {
+		invalidateFolderCache();
+		await load();
 	}
 
 	/**
@@ -214,7 +259,7 @@
 		if (!name) return;
 		try {
 			await createFolder(name, currentId);
-			await load();
+			await reload();
 		} catch (e) {
 			errorToast(e);
 		}
@@ -260,7 +305,7 @@
 						)
 					: t('files.uploaded', 'Upload complete');
 			ui.finishProgress(nid, done, 'success');
-			await load();
+			await reload();
 		} catch (err) {
 			ui.finishProgress(nid, errorMessage(err), 'error');
 		} finally {
@@ -292,8 +337,11 @@
 		if (!name || name === current) return;
 		try {
 			if (kind === 'file') await renameFile(id, name);
-			else await renameFolder(id, name);
-			await load();
+			else {
+				await renameFolder(id, name);
+				rememberFolderName(id, name); // keep breadcrumbs current immediately
+			}
+			await reload();
 		} catch (e) {
 			errorToast(e);
 		}
@@ -310,7 +358,7 @@
 		try {
 			if (kind === 'file') await deleteFile(id);
 			else await deleteFolder(id);
-			await load();
+			await reload();
 		} catch (e) {
 			errorToast(e);
 		}
@@ -461,7 +509,6 @@
 			favoriteIds = new Set([...favoriteIds, ...items.map((it) => it.id)]);
 			ui.notify(t('files.added_favorites', 'Added to favorites'), 'success');
 			clearSelection();
-			void loadBadges();
 		} catch (e) {
 			errorToast(e);
 		}
@@ -530,7 +577,7 @@
 			}
 		}
 		clearSelection();
-		await load();
+		await reload();
 	}
 
 	// ── Drag-to-move ─────────────────────────────────────────────────────────
@@ -569,7 +616,7 @@
 				else await moveFolder(it.id, targetFolderId);
 			}
 			clearSelection();
-			await load();
+			await reload();
 		} catch (err) {
 			errorToast(err);
 		}
@@ -746,7 +793,7 @@
 				await uploadFile(dirId, file);
 			}
 			ui.notify(t('files.uploaded', 'Upload complete'), 'success');
-			await load();
+			await reload();
 		} catch (err) {
 			errorToast(err);
 		} finally {
@@ -797,6 +844,16 @@
 
 	/** Flat id order matching how rows are displayed (folders then files). */
 	const orderedIds = $derived([...sortedFolders.map((f) => f.id), ...sortedFiles.map((f) => f.id)]);
+
+	// Folders-then-files as one ordered, discriminated list so the (flat) view can
+	// be windowed by a single VirtualList. Content width drives the grid columns.
+	type Entry = { kind: 'folder'; folder: FolderItem } | { kind: 'file'; file: FileItem };
+	const entries = $derived<Entry[]>([
+		...sortedFolders.map((folder) => ({ kind: 'folder' as const, folder })),
+		...sortedFiles.map((file) => ({ kind: 'file' as const, file }))
+	]);
+	const entryKey = (e: Entry): string => (e.kind === 'folder' ? e.folder.id : e.file.id);
+	let gridWidth = $state(0);
 
 	// ── Group-by / swimlanes ─────────────────────────────────────────────────
 	// Mirrors GROUP_BY_DEFS in static/js/app/filesView.js: a flat list ('') plus
@@ -1088,49 +1145,10 @@
 			hint={t('files.empty_hint', 'Drop files here or use the Upload button to add files.')}
 		/>
 	{:else}
-		<div class="files-container">
-			<div class={viewClass}>
-				<div class="list-header">
-					<div class="list-header-checkbox">
-						<input
-							type="checkbox"
-							aria-label={t('files.select_all', 'Select all')}
-							checked={selectedCount > 0 && selectedCount === totalCount}
-							indeterminate={selectedCount > 0 && selectedCount < totalCount}
-							onchange={toggleSelectAll}
-						/>
-					</div>
-					{#each [{ f: 'name', l: t('files.col_name', 'Name') }, { f: 'owner', l: t('files.col_owner', 'Owner') }, { f: 'type', l: t('files.col_type', 'Type') }, { f: 'size', l: t('files.col_size', 'Size') }, { f: 'modified_at', l: t('files.col_modified', 'Modified') }] as col (col.f)}
-						{#if col.f === 'owner'}
-							<div class="list-header-owner">{col.l}</div>
-						{:else}
-							<button
-								class="list-header-sort"
-								class:is-active={sortField === col.f}
-								data-sort-field={col.f}
-								onclick={() => toggleSort(col.f as SortField)}
-							>
-								{col.l}
-								{#if sortField === col.f}
-									<Icon
-										name={sortDir === 1 ? 'arrow-down' : 'arrow-up'}
-										class="list-header-sort__arrow"
-									/>
-								{/if}
-							</button>
-						{/if}
-					{/each}
-					<div></div>
-				</div>
-
-				{#if groupBy === ''}
-					{#each sortedFolders as folder (folder.id)}
-						{@render folderRow(folder)}
-					{/each}
-					{#each sortedFiles as file (file.id)}
-						{@render fileRow(file)}
-					{/each}
-				{:else}
+		<div class="files-container" bind:clientWidth={gridWidth}>
+			{#if groupBy !== ''}
+				<div class={viewClass}>
+					{@render fileListHeader()}
 					{#each groups as group (group.key)}
 						<div class="resource-list__swimlane-header">{group.label}</div>
 						{#each group.folders as folder (folder.id)}
@@ -1140,11 +1158,70 @@
 							{@render fileRow(file)}
 						{/each}
 					{/each}
-				{/if}
-			</div>
+				</div>
+			{:else if filesStore.viewMode === 'list'}
+				<!-- Flat list: only the rows near the viewport are mounted. -->
+				<div class="files-list-view">
+					{@render fileListHeader()}
+					<VirtualList items={entries} rowHeight={56} key={entryKey} row={entryRow} />
+				</div>
+			{:else}
+				<!-- Grid: the windowed list's inner element IS the card grid. -->
+				<VirtualList
+					items={entries}
+					columns={gridColumns(gridWidth)}
+					rowHeight={240}
+					windowClass="files-grid-view"
+					key={entryKey}
+					row={entryRow}
+				/>
+			{/if}
 		</div>
 	{/if}
 </div>
+
+{#snippet fileListHeader()}
+	<div class="list-header">
+		<div class="list-header-checkbox">
+			<input
+				type="checkbox"
+				aria-label={t('files.select_all', 'Select all')}
+				checked={selectedCount > 0 && selectedCount === totalCount}
+				indeterminate={selectedCount > 0 && selectedCount < totalCount}
+				onchange={toggleSelectAll}
+			/>
+		</div>
+		{#each [{ f: 'name', l: t('files.col_name', 'Name') }, { f: 'owner', l: t('files.col_owner', 'Owner') }, { f: 'type', l: t('files.col_type', 'Type') }, { f: 'size', l: t('files.col_size', 'Size') }, { f: 'modified_at', l: t('files.col_modified', 'Modified') }] as col (col.f)}
+			{#if col.f === 'owner'}
+				<div class="list-header-owner">{col.l}</div>
+			{:else}
+				<button
+					class="list-header-sort"
+					class:is-active={sortField === col.f}
+					data-sort-field={col.f}
+					onclick={() => toggleSort(col.f as SortField)}
+				>
+					{col.l}
+					{#if sortField === col.f}
+						<Icon
+							name={sortDir === 1 ? 'arrow-down' : 'arrow-up'}
+							class="list-header-sort__arrow"
+						/>
+					{/if}
+				</button>
+			{/if}
+		{/each}
+		<div></div>
+	</div>
+{/snippet}
+
+{#snippet entryRow(e: Entry)}
+	{#if e.kind === 'folder'}
+		{@render folderRow(e.folder)}
+	{:else}
+		{@render fileRow(e.file)}
+	{/if}
+{/snippet}
 
 {#snippet folderRow(folder: FolderItem)}
 	<div
@@ -1396,10 +1473,14 @@
 	mode={moveMode}
 	onmoved={() => {
 		clearSelection();
-		void load();
+		void reload();
 	}}
 />
-<ShareDialog bind:open={shareOpen} item={actionTarget} />
+<ShareDialog
+	bind:open={shareOpen}
+	item={actionTarget}
+	onshared={(id) => (sharedIds = new Set(sharedIds).add(id))}
+/>
 <FileViewer bind:open={viewerOpen} file={viewerFile} />
 <WopiEditor
 	bind:open={wopiOpen}

@@ -27,6 +27,17 @@ impl FavoritesService {
     pub fn new(repo: Arc<FavoritesPgRepository>) -> Self {
         Self { repo }
     }
+
+    /// Subset of `(item_id, item_type)` pairs the user has favorited — used to
+    /// stamp star badges onto a folder listing in one batched query (no N+1, no
+    /// global page fetch).
+    pub async fn favorited_ids(
+        &self,
+        user_id: Uuid,
+        items: &[(&str, &str)],
+    ) -> Result<HashSet<String>> {
+        self.repo.batch_check_favorites(user_id, items).await
+    }
 }
 
 impl FavoritesUseCase for FavoritesService {

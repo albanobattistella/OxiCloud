@@ -43,9 +43,11 @@
 	interface Props {
 		open: boolean;
 		item: Target | null;
+		/** Fired with the item id when an outgoing share (grant or link) is created. */
+		onshared?: (id: string) => void;
 	}
 
-	let { open = $bindable(false), item }: Props = $props();
+	let { open = $bindable(false), item, onshared }: Props = $props();
 
 	let tab = $state<'people' | 'link'>('people');
 	let directoryAvailable = $state(true);
@@ -159,6 +161,7 @@
 			query = '';
 			results = [];
 			summarizeNotifications(res.notification.outcomes);
+			onshared?.(item.id);
 			await loadGrants();
 		} catch (e) {
 			errorToast(e);
@@ -280,6 +283,7 @@
 			newLinkName = '';
 			password = '';
 			expiresAt = null;
+			onshared?.(item.id);
 			await loadShares();
 			ui.notify(t('share.created', 'Public link created'), 'success');
 		} catch (e) {

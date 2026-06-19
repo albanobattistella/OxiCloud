@@ -169,6 +169,8 @@ impl FolderHandler {
     fn compute_listing_etag(
         folders: &[crate::application::dtos::folder_dto::FolderDto],
         files: &[crate::application::dtos::file_dto::FileDto],
+        favorite_ids: &[String],
+        shared_ids: &[String],
     ) -> String {
         let max_mod = folders
             .iter()
@@ -180,6 +182,10 @@ impl FolderHandler {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         max_mod.hash(&mut hasher);
         count.hash(&mut hasher);
+        // Badge state is part of the representation — fold it in (both slices are
+        // sorted, so the hash is stable) so a favorite/share change busts the ETag.
+        favorite_ids.hash(&mut hasher);
+        shared_ids.hash(&mut hasher);
         format!("\"{:x}\"", hasher.finish())
     }
 
@@ -205,7 +211,48 @@ impl FolderHandler {
 
         match (folders_result, files_result) {
             (Ok(folders), Ok(files)) => {
-                let etag = Self::compute_listing_etag(&folders, &files);
+                // Badge enrichment for this listing: which items the caller has
+                // favorited / shared. Two batched, index-backed queries (run
+                // concurrently) replace the client's old per-navigation global
+                // favorites + outgoing-shares fetches — correct (no 200-item
+                // ceiling) and scoped to just the items on screen.
+                let fav_pairs: Vec<(&str, &str)> = folders
+                    .iter()
+                    .map(|f| (f.id.as_str(), "folder"))
+                    .chain(files.iter().map(|f| (f.id.as_str(), "file")))
+                    .collect();
+                let resource_uuids: Vec<uuid::Uuid> = folders
+                    .iter()
+                    .map(|f| f.id.as_str())
+                    .chain(files.iter().map(|f| f.id.as_str()))
+                    .filter_map(|s| uuid::Uuid::parse_str(s).ok())
+                    .collect();
+
+                let (favorited, shared) = tokio::join!(
+                    async {
+                        match &state.favorites_service {
+                            Some(svc) => svc
+                                .favorited_ids(auth_user.id, &fav_pairs)
+                                .await
+                                .unwrap_or_default(),
+                            None => Default::default(),
+                        }
+                    },
+                    state
+                        .authorization
+                        .shared_resource_ids(auth_user.id, &resource_uuids)
+                );
+
+                let mut favorite_ids: Vec<String> = favorited.into_iter().collect();
+                favorite_ids.sort();
+                let mut shared_ids: Vec<String> = shared
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|u| u.to_string())
+                    .collect();
+                shared_ids.sort();
+
+                let etag = Self::compute_listing_etag(&folders, &files, &favorite_ids, &shared_ids);
 
                 // 304 Not Modified if the client already has this version
                 if let Some(inm) = headers.get(header::IF_NONE_MATCH)
@@ -219,7 +266,12 @@ impl FolderHandler {
                         .unwrap()
                         .into_response();
                 }
-                let listing = FolderListingDto { folders, files };
+                let listing = FolderListingDto {
+                    folders,
+                    files,
+                    favorite_ids,
+                    shared_ids,
+                };
                 let mut resp = (StatusCode::OK, Json(listing)).into_response();
                 resp.headers_mut()
                     .insert(header::ETAG, header::HeaderValue::from_str(&etag).unwrap());

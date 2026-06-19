@@ -105,6 +105,35 @@ impl PgAclEngine {
         }
     }
 
+    /// Subset of `resource_ids` the caller has shared — i.e. has any outgoing
+    /// role grant on (a `user`/`group` grant or a `token` grant, the latter
+    /// being a public link). One batched query, mirroring the membership the
+    /// `/grants/outgoing/resources` endpoint exposes; used to stamp "shared"
+    /// badges onto a folder listing without a per-navigation grants fetch.
+    pub async fn shared_resource_ids(
+        &self,
+        granted_by: Uuid,
+        resource_ids: &[Uuid],
+    ) -> Result<HashSet<Uuid>, DomainError> {
+        if resource_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT resource_id
+              FROM storage.role_grants
+             WHERE granted_by = $1
+               AND resource_id = ANY($2)
+            "#,
+        )
+        .bind(granted_by)
+        .bind(resource_ids)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("PgAcl", format!("shared_resource_ids: {e}")))?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     /// Creates a stub instance for tests that need to construct services
     /// without a real PostgreSQL pool. Connecting to the lazy pool will
     /// fail at runtime — only safe in tests that exercise types, not actual

@@ -1,4 +1,5 @@
 node_modules/
+/bench/
 /build/
 /.svelte-kit/
 /package-lock.json.bak
