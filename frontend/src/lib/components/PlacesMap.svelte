@@ -51,7 +51,12 @@
 		if (hasBasemap !== null) return hasBasemap;
 		try {
 			const res = await fetch(BASEMAP_URL, { headers: { Range: 'bytes=0-0' } });
-			hasBasemap = res.ok; // 200/206 = present, 404 = absent
+			// The SPA fallback serves index.html (HTTP 200, text/html) for any
+			// missing path, so `res.ok` alone can't distinguish "basemap present"
+			// from "absent". A real .pmtiles is binary (octet-stream); the shell
+			// is HTML — treat an HTML body as "no basemap" and fall back cleanly.
+			const type = res.headers.get('Content-Type') ?? '';
+			hasBasemap = res.ok && !type.toLowerCase().includes('text/html');
 		} catch {
 			hasBasemap = false;
 		}

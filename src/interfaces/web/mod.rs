@@ -97,6 +97,9 @@ pub fn create_web_routes() -> Router<Arc<AppState>> {
 ///   (`element.style.*`) for UI state — impractical to migrate to classes.
 /// - `frame-src` lists `blob:` explicitly (`*` only matches network schemes) for
 ///   inline PDF/document viewers; `media-src` lists `blob:` for blob video/audio.
+/// - `worker-src` lists `blob:` because MapLibre GL (the Places map) spawns its
+///   web worker from a blob URL; `'self'` covers same-origin workers like the
+///   delta-upload worker.
 pub fn content_security_policy(config: &AppConfig) -> String {
     let static_path = resolve_static_path(config);
     let hashes = inline_script_csp_hashes(&static_path);
@@ -118,7 +121,7 @@ pub fn content_security_policy(config: &AppConfig) -> String {
     format!(
         "default-src 'self'; \
          {script_src}; \
-         worker-src 'self'; \
+         worker-src 'self' blob:; \
          style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob: https:; \
          media-src 'self' blob:; \
