@@ -15,6 +15,7 @@
 
 import { getCsrfHeaders } from '../../core/csrf.js';
 import { i18n } from '../../core/i18n.js';
+import { peopleView } from './people.js';
 import { photosView } from './photos.js';
 import { photosLightbox } from './photosLightbox.js';
 
@@ -36,7 +37,7 @@ export const placesView = {
     _libs: null,
     /** @type {number} debounce timer for moveend refresh */
     _moveTimer: 0,
-    /** @type {'moments'|'places'} */
+    /** @type {'moments'|'places'|'people'} */
     _activeTab: 'moments',
     /** @type {boolean|null} cached basemap availability */
     _hasBasemap: null,
@@ -60,13 +61,15 @@ export const placesView = {
             bar.className = 'photos-subnav';
             bar.innerHTML =
                 `<button class="photos-subnav-tab active" type="button" data-ptab="moments">${this._esc(i18n.t('photos.tab_moments'))}</button>` +
-                `<button class="photos-subnav-tab" type="button" data-ptab="places">${this._esc(i18n.t('photos.tab_places'))}</button>`;
+                `<button class="photos-subnav-tab" type="button" data-ptab="places">${this._esc(i18n.t('photos.tab_places'))}</button>` +
+                `<button class="photos-subnav-tab hidden" type="button" data-ptab="people">${this._esc(i18n.t('photos.tab_people'))}</button>`;
             bar.addEventListener('click', (e) => {
                 const btn = /** @type {HTMLElement} */ (e.target).closest('[data-ptab]');
-                if (btn) this._switchTab(/** @type {'moments'|'places'} */ (btn.getAttribute('data-ptab')));
+                if (btn) this._switchTab(/** @type {'moments'|'places'|'people'} */ (btn.getAttribute('data-ptab')));
             });
             contentArea.insertBefore(bar, contentArea.firstChild);
             this._subnav = bar;
+            this._probePeople();
         }
         this._subnav.classList.remove('hidden');
 
@@ -82,12 +85,26 @@ export const placesView = {
         this._activeTab = 'moments';
         this._setActiveTab('moments');
         this.hide();
+        peopleView.hide();
+    },
+
+    /** Reveal the People tab only if GET /api/people is available (faces on). */
+    async _probePeople() {
+        try {
+            const res = await fetch('/api/people', { credentials: 'include', headers: getCsrfHeaders() });
+            if (res.ok) {
+                this._subnav?.querySelector('[data-ptab="people"]')?.classList.remove('hidden');
+            }
+        } catch {
+            /* leave the People tab hidden */
+        }
     },
 
     /** Hide the tab bar and the map (called when leaving the Photos section). */
     unmountTabs() {
         this._subnav?.classList.add('hidden');
         this.hide();
+        peopleView.hide();
     },
 
     /** Hide the map container (without destroying the map). */
@@ -96,19 +113,19 @@ export const placesView = {
     },
 
     /**
-     * @param {'moments'|'places'} tab
+     * @param {'moments'|'places'|'people'} tab
      */
     _switchTab(tab) {
         if (tab === this._activeTab) return;
         this._activeTab = tab;
         this._setActiveTab(tab);
-        if (tab === 'places') {
-            photosView.hide();
-            this._showMap();
-        } else {
-            this.hide();
-            photosView.show();
-        }
+        // Hide all three views, then show the selected one.
+        photosView.hide();
+        this.hide();
+        peopleView.hide();
+        if (tab === 'places') this._showMap();
+        else if (tab === 'people') peopleView.show();
+        else photosView.show();
     },
 
     /** @param {string} tab */
