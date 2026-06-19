@@ -881,6 +881,9 @@ pub struct FeaturesConfig {
     pub enable_music: bool,
     /// Lists the user's geotagged photos on a map (GET /api/photos/geo).
     pub enable_places: bool,
+    /// Face detection + identity clustering for the photo library ("People").
+    /// Biometric data — OFF by default; opt-in per deployment/user.
+    pub enable_faces: bool,
     /// Expose other OxiCloud users as a read-only "system" address book
     /// at GET /api/address-books. Set to false to hide the user directory.
     pub expose_system_users: bool,
@@ -896,6 +899,7 @@ impl Default for FeaturesConfig {
             enable_search: true,       // Enable search feature
             enable_music: true,        // Enable music feature
             enable_places: true,       // Photo map (GET /api/photos/geo + Places tab)
+            enable_faces: false,       // People/faces (biometric) — opt-in, off by default
             expose_system_users: true, // Expose OxiCloud users as address book by default
         }
     }
@@ -1385,6 +1389,12 @@ impl AppConfig {
             && let Ok(val) = enable_places
         {
             config.features.enable_places = val;
+        }
+
+        if let Ok(enable_faces) = env::var("OXICLOUD_ENABLE_FACES").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_faces
+        {
+            config.features.enable_faces = val;
         }
 
         // Content search (embedded Tantivy index)
