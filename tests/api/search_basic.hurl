@@ -153,7 +153,83 @@ body not contains "{{needle_file_id}}"
 
 
 # ─────────────────────────────────────────────────────────────
-# 6 — Teardown: removing the folder recursively takes the file
+# 6 — CONTENT-search cross-drive isolation (docs/plan/drive.md §11).
+#     The cross-user check above (step 5) verifies the NAME-search
+#     path. The Tantivy content index is a separate code path with
+#     its own filter: `Must drive_id ∈ accessible_drives`. This
+#     block pins it.
+#
+#     Sequence:
+#       6a. Admin uploads `content-canary.txt` whose body contains
+#           the distinctive phrase `ContentIndexCanaryXyzzy2026Drive`.
+#       6b. Wait ~2s for the async content-index worker
+#           (`OXICLOUD_CONTENT_SEARCH_FLUSH_INTERVAL_MS` defaults
+#           to 1500ms) to drain the dirty queue and apply the
+#           Tantivy mutation.
+#       6c. Admin searches for the phrase → MUST hit the file
+#           (the index works).
+#       6d. Bob searches for the same phrase → MUST be empty,
+#           AND the response shape MUST carry no hidden-count
+#           leak (no `total`/`hidden`/etc. field that could
+#           reveal "you have N matches you can't see"). The
+#           pivot from `Must user_id = caller` to `Must drive_id
+#           ∈ accessible_drives` is the §11 security primitive;
+#           a regression here would be a cross-drive leak.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{admin_token}}
+[MultipartFormData]
+folder_id: {{search_folder_id}}
+file: file,fixtures/content-canary.txt; text/plain
+
+HTTP 201
+[Captures]
+canary_file_id: jsonpath "$.id"
+
+
+# Drain the content-index worker. 2s exceeds the 1500ms flush
+# interval comfortably; raise if a slower CI machine flakes.
+GET {{base_url}}/api/search?query=ContentIndexCanaryXyzzy2026Drive
+Authorization: Bearer {{admin_token}}
+[Options]
+delay: 2500ms
+
+HTTP 200
+[Asserts]
+# Admin sees the content match — proves indexing landed.
+jsonpath "$.files" count >= 1
+body contains "{{canary_file_id}}"
+
+
+GET {{base_url}}/api/search?query=ContentIndexCanaryXyzzy2026Drive
+Authorization: Bearer {{bob_token}}
+
+HTTP 200
+[Asserts]
+# Bob has no access to admin's drive → Tantivy's Must-clause
+# filters every doc that doesn't carry one of Bob's drive_ids,
+# so the file vanishes entirely.
+jsonpath "$.files"   count == 0
+jsonpath "$.folders" count == 0
+body not contains "{{canary_file_id}}"
+body not contains "ContentIndexCanaryXyzzy2026Drive"
+# Anti-enum: every count the response surfaces must reflect the
+# FILTERED set — i.e. zero when the caller has no accessible
+# hits. The §11 rule is "no 'you have N hidden matches' field
+# anywhere". `total_count` is a legitimate pagination count and
+# is OK as long as it equals the filtered total (zero here). The
+# other field names below MUST stay absent: a future field
+# called `hidden_count`/`filtered`/etc. that reveals matches
+# Bob can't see would be the regression.
+jsonpath "$.total_count"  == 0
+jsonpath "$.has_more"     == false
+jsonpath "$.hidden_count" not exists
+jsonpath "$.filtered"     not exists
+jsonpath "$.total"        not exists
+
+
+# ─────────────────────────────────────────────────────────────
+# 7 — Teardown: removing the folder recursively takes the files
 #     with it, so a single DELETE is enough.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/folders/{{search_folder_id}}

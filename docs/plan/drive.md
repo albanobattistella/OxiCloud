@@ -882,14 +882,52 @@ field.
    change.
 3. **Handler-side ReBAC re-verification** (defense in depth):
    after Tantivy returns hits, the `/api/search` handler
-   re-checks each `file_id` with the engine. Catches two cases
-   the drive_id filter can't:
-   - **Index staleness** — file just moved to a drive the
-     caller can't access; indexer hasn't caught up.
-   - **Per-file grants** — ReBAC can grant access to a single
-     file inside a drive the caller doesn't otherwise have. The
-     filter is drive-only; the re-check restores per-file
-     resolution.
+   re-checks each `file_id` with the engine. The re-check is
+   *subtractive only* — it can drop a Tantivy hit, never add
+   one. It catches:
+   - **Index staleness** — file just moved to a drive the caller
+     can't access; the indexer hasn't caught up so Tantivy still
+     returns the doc under its old drive_id (a false positive
+     from the caller's perspective). The re-check denies and the
+     hit drops.
+
+   #### Known D0 scope limit — per-resource grants invisible in search
+
+   The drive-only Must clause makes the inverse case structurally
+   invisible: a file or folder shared *directly* with the caller
+   via ReBAC, living in a drive the caller has no membership in,
+   never reaches the re-check because Tantivy already filtered the
+   doc out at index-query time. Concretely:
+
+   - Alice grants Bob a per-file Read on `report.pdf` inside her
+     Personal drive. Bob has no drive grant on Alice's Personal.
+   - Bob's `accessible_drives` set doesn't include Alice's drive.
+   - Tantivy's `Must drive_id ∈ accessible_drives` rejects every
+     doc with Alice's drive_id, including `report.pdf`.
+   - Bob's search misses `report.pdf` even though `authz.check(Bob,
+     Read, File(report))` would say yes.
+
+   This is **not a security issue** — Bob still can't access
+   anything he isn't entitled to. The trade-off is *discovery
+   only*: search doesn't surface directly-shared resources. The
+   "Shared with me" UI is the canonical surface for that workflow
+   (resources someone explicitly shared with you live in the
+   notification / inbox / share-listing flow, not in global search).
+
+   Closing this gap is deferred. Two future moves, in order of cost:
+   - **Per-file grants** (low cost): one extra `role_grants` query
+     for `resource_type='file' AND subject ∈ caller_set`, widen
+     the Must clause to `drive_id ∈ A OR file_id ∈ F`. ~1 day of
+     work; deliverable when the "Shared with me" search surface is
+     prioritised.
+   - **Per-folder grants with cascade** (high cost): the ltree
+     subtree expansion is what makes it gnarly — a grant on folder
+     `F` should surface every descendant in search. Two viable
+     shapes: (a) reindex with a multi-valued `ancestor_folder_ids`
+     STRING field on each doc (schema v3, full reindex), or (b)
+     expand each granted folder to its subtree at query time
+     (per-grant recursive SQL on the hot path). Probably a dedicated
+     PR alongside the D1 URL-routing work.
 4. **Token subjects cannot search**. `/api/search` returns 401
    for token-authenticated callers (anonymous link tokens have
    access to one resource, not a drive — there is no meaningful

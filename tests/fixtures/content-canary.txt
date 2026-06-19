@@ -1,0 +1,1 @@
+ContentIndexCanaryXyzzy2026Drive — this phrase is intentionally distinctive so that searches in the Tantivy content index can locate it unambiguously across test runs. Used by tests/api/search_basic.hurl to verify cross-drive content-search isolation (docs/plan/drive.md §11). Do not include this phrase in any other fixture.
