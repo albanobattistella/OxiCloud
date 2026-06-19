@@ -56,9 +56,15 @@ pub trait FileUploadUseCase: Send + Sync + 'static {
     /// blob, or create the file when it doesn't exist (WebDAV/WOPI PUT).
     ///
     /// Takes ownership of the blob's reference (released on failure).
+    ///
+    /// `drive_id` scopes both the existence probe (`find_file_by_path`)
+    /// and the parent-folder resolution (`get_parent_folder_id`) — the
+    /// handler is responsible for deriving it from its protocol context
+    /// (NC chroot, native default-drive lookup, WOPI default-drive).
     async fn update_file_streaming(
         &self,
         path: &str,
+        drive_id: Uuid,
         blob: StoredBlob,
         content_type: &str,
         modified_at: Option<i64>,
@@ -104,8 +110,13 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
         caller_id: Uuid,
     ) -> Result<FileDto, DomainError>;
 
-    /// Gets a file by its path (for WebDAV)
-    async fn get_file_by_path(&self, path: &str) -> Result<FileDto, DomainError>;
+    /// Gets a file by its path (for WebDAV), scoped to a drive.
+    ///
+    /// Post-D0, `storage.files.path` is unique only within a single
+    /// drive. The `drive_id` filter scopes the lookup to a specific
+    /// drive (caller derives it from its protocol context: NC chroot,
+    /// native default-drive lookup, WOPI default-drive lookup).
+    async fn get_file_by_path(&self, path: &str, drive_id: Uuid) -> Result<FileDto, DomainError>;
 
     /// Lists files in a folder
     async fn list_files(&self, folder_id: Option<&str>) -> Result<Vec<FileDto>, DomainError>;

@@ -358,6 +358,10 @@ fn folder_dto_from_search(
         path: sr.path.clone(),
         parent_id: sr.parent_id.clone(),
         owner_id: None,
+        // Search result — drive_id is informational. The search row
+        // doesn't currently SELECT it, and path-based lookups never
+        // enter this code path.
+        drive_id: uuid::Uuid::nil(),
         created_at: sr.created_at,
         modified_at: sr.modified_at,
         is_root: sr.is_root,
@@ -490,7 +494,6 @@ async fn resolve_scope_folder(
     body: &str,
     session: &crate::interfaces::nextcloud::session::NcSession,
 ) -> Option<String> {
-    let user = &session.user;
     let chroot = session.require_chroot().ok()?;
     let url_user = &session.raw_username;
     let href = parse_scope_href(body)?;
@@ -511,7 +514,7 @@ async fn resolve_scope_folder(
 
     let folder_service = &state.applications.folder_service;
     folder_service
-        .get_folder_by_path(&internal_path, user.id)
+        .get_folder_by_path(&internal_path, chroot.drive_id)
         .await
         .ok()
         .map(|f| f.id)

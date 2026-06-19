@@ -935,7 +935,11 @@ impl FileReadPort for FileBlobReadRepository {
         Ok(Self::make_file_path(row.1.as_deref(), &row.0))
     }
 
-    async fn get_parent_folder_id(&self, path: &str) -> Result<String, DomainError> {
+    async fn get_parent_folder_id(
+        &self,
+        path: &str,
+        drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         let path = path.trim_start_matches('/').trim_end_matches('/');
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -955,29 +959,49 @@ impl FileReadPort for FileBlobReadRepository {
             ));
         }
 
-        self.get_folder_id_by_path(&folder_path).await
+        self.get_folder_id_by_path(&folder_path, drive_id).await
     }
 
-    async fn get_folder_id_by_path(&self, folder_path: &str) -> Result<String, DomainError> {
+    async fn get_folder_id_by_path(
+        &self,
+        folder_path: &str,
+        drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         let folder_path = folder_path.trim_start_matches('/').trim_end_matches('/');
 
         if folder_path.is_empty() {
             return Err(DomainError::not_found("Folder", "empty path"));
         }
 
+        // Post-D0 `storage.folders.path` repeats across drives —
+        // filter by `drive_id` to scope the lookup.
         sqlx::query_scalar::<_, String>(
-            "SELECT id::text FROM storage.folders WHERE path = $1 AND NOT is_trashed",
+            "SELECT id::text FROM storage.folders \
+             WHERE path = $1 AND drive_id = $2 AND NOT is_trashed",
         )
         .bind(folder_path)
+        .bind(drive_id)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| DomainError::internal_error("FileBlobRead", format!("folder lookup: {e}")))?
         .ok_or_else(|| DomainError::not_found("Folder", format!("path: {folder_path}")))
     }
 
-    /// Direct SQL lookup using materialized folder paths.
+    /// Direct SQL lookup using materialized folder paths, scoped to a drive.
     /// O(1) query instead of O(depth) folder walk.
-    async fn find_file_by_path(&self, path: &str) -> Result<Option<File>, DomainError> {
+    ///
+    /// Post-D0 `storage.folders.path` repeats across drives (each drive
+    /// has its own root with a name like `"Personal"`). Without the
+    /// `drive_id` filter the lookup would be non-deterministic. The
+    /// root-level branch filters on `fi.drive_id`; the nested branch
+    /// filters on the parent folder's `fo.drive_id` (which closes the
+    /// leak cleanly and matches the path semantics — see Step 2 of
+    /// the path-lookup refactor).
+    async fn find_file_by_path(
+        &self,
+        path: &str,
+        drive_id: Uuid,
+    ) -> Result<Option<File>, DomainError> {
         let path = path.trim_start_matches('/').trim_end_matches('/');
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -996,7 +1020,8 @@ impl FileReadPort for FileBlobReadRepository {
         let folder_path = segments[..segments.len() - 1].join("/");
 
         let row = if folder_path.is_empty() {
-            // File at root level (no parent folder)
+            // File at root level (no parent folder) — filter on
+            // `fi.drive_id` because there's no folder row to join through.
             sqlx::query_as::<
                 _,
                 (
@@ -1021,14 +1046,19 @@ impl FileReadPort for FileBlobReadRepository {
                        fi.user_id
                   FROM storage.files fi
                   LEFT JOIN storage.folders fo ON fo.id = fi.folder_id
-                 WHERE fi.name = $1 AND fi.folder_id IS NULL AND NOT fi.is_trashed
+                 WHERE fi.name = $1 AND fi.folder_id IS NULL
+                   AND fi.drive_id = $2 AND NOT fi.is_trashed
                 "#,
             )
             .bind(filename)
+            .bind(drive_id)
             .fetch_optional(self.pool.as_ref())
             .await
         } else {
-            // File inside a folder — look up by folder path + filename
+            // File inside a folder — look up by folder path + filename,
+            // filtered by the parent folder's drive_id (path semantics
+            // are folder-scoped, so this also catches mis-pointed file
+            // rows during D0/D7's dual-write window).
             sqlx::query_as::<
                 _,
                 (
@@ -1053,11 +1083,13 @@ impl FileReadPort for FileBlobReadRepository {
                        fi.user_id
                   FROM storage.files fi
                   JOIN storage.folders fo ON fo.id = fi.folder_id
-                 WHERE fo.path = $1 AND fi.name = $2 AND NOT fi.is_trashed
+                 WHERE fo.path = $1 AND fi.name = $2
+                   AND fo.drive_id = $3 AND NOT fi.is_trashed
                 "#,
             )
             .bind(&folder_path)
             .bind(filename)
+            .bind(drive_id)
             .fetch_optional(self.pool.as_ref())
             .await
         }

@@ -235,7 +235,7 @@ async fn handle_propfind(
 
     // Try to resolve as folder first.
     let folder_result = folder_service
-        .get_folder_by_path(&internal_path, user.id)
+        .get_folder_by_path(&internal_path, chroot.drive_id)
         .await;
 
     if let Ok(folder) = folder_result {
@@ -260,7 +260,9 @@ async fn handle_propfind(
     }
 
     // Not a folder — try as a file.
-    let file_result = file_service.get_file_by_path(&internal_path).await;
+    let file_result = file_service
+        .get_file_by_path(&internal_path, chroot.drive_id)
+        .await;
     if let Ok(file) = file_result {
         // Batch-check favorites for this single file.
         let favorite_ids = if let Some(fav_svc) = state.favorites_service.as_ref() {
@@ -307,7 +309,6 @@ async fn handle_get(
     subpath: &str,
     headers: &axum::http::HeaderMap,
 ) -> Result<Response<Body>, AppError> {
-    let user = &session.user;
     let chroot = session.require_chroot()?;
     // GET on root folder — NC clients use this as an existence check
     if subpath.is_empty() || subpath == "/" {
@@ -324,7 +325,7 @@ async fn handle_get(
 
     // Check if path is a folder first (NC clients use GET as existence check)
     if folder_service
-        .get_folder_by_path(&internal_path, user.id)
+        .get_folder_by_path(&internal_path, chroot.drive_id)
         .await
         .is_ok()
     {
@@ -336,7 +337,7 @@ async fn handle_get(
     }
 
     let file = file_service
-        .get_file_by_path(&internal_path)
+        .get_file_by_path(&internal_path, chroot.drive_id)
         .await
         .map_err(|_| AppError::not_found("File not found"))?;
 
@@ -386,7 +387,6 @@ async fn handle_head(
     session: &crate::interfaces::nextcloud::session::NcSession,
     subpath: &str,
 ) -> Result<Response<Body>, AppError> {
-    let user = &session.user;
     let chroot = session.require_chroot()?;
     // HEAD on root folder — NC clients use this as an existence check
     if subpath.is_empty() || subpath == "/" {
@@ -403,7 +403,7 @@ async fn handle_head(
 
     // Check if path is a folder (NC clients use HEAD as existence check)
     if folder_service
-        .get_folder_by_path(&internal_path, user.id)
+        .get_folder_by_path(&internal_path, chroot.drive_id)
         .await
         .is_ok()
     {
@@ -415,7 +415,7 @@ async fn handle_head(
     }
 
     let file = file_service
-        .get_file_by_path(&internal_path)
+        .get_file_by_path(&internal_path, chroot.drive_id)
         .await
         .map_err(|_| AppError::not_found("File not found"))?;
 
@@ -479,10 +479,13 @@ async fn handle_proppatch(
     let internal_path = nc_to_internal_path(chroot, subpath)?;
     let file_service = &state.applications.file_retrieval_service;
     let folder_service = &state.applications.folder_service;
-    let resource = if let Ok(file) = file_service.get_file_by_path(&internal_path).await {
+    let resource = if let Ok(file) = file_service
+        .get_file_by_path(&internal_path, chroot.drive_id)
+        .await
+    {
         Some((file.id, "file"))
     } else if let Ok(folder) = folder_service
-        .get_folder_by_path(&internal_path, user.id)
+        .get_folder_by_path(&internal_path, chroot.drive_id)
         .await
     {
         Some((folder.id, "folder"))
@@ -687,7 +690,10 @@ async fn handle_put(
     // bandwidth or disk I/O on a body the server is going to throw away.
     // The lookup is reused for the create-vs-update distinction below,
     // so this is also free of an extra DB hit.
-    let existing = file_service.get_file_by_path(&internal_path).await.ok();
+    let existing = file_service
+        .get_file_by_path(&internal_path, chroot.drive_id)
+        .await
+        .ok();
     let current_etag = existing.as_ref().map(|f| f.etag.as_str());
 
     if let Some(value) = req
@@ -742,7 +748,13 @@ async fn handle_put(
     // Single streaming path — handles both update and create internally,
     // swapping the file row onto the already-ingested blob.
     let stored = upload_service
-        .update_file_streaming(&internal_path, ingested.stored(), &content_type, oc_mtime)
+        .update_file_streaming(
+            &internal_path,
+            chroot.drive_id,
+            ingested.stored(),
+            &content_type,
+            oc_mtime,
+        )
         .await
         .map_err(|e| AppError::internal_error(format!("Failed to store file: {}", e)))?;
 
@@ -787,7 +799,7 @@ async fn handle_mkcol(
     // auto-create doesn't break real clients.
 
     if folder_service
-        .get_folder_by_path(&internal_path, user.id)
+        .get_folder_by_path(&internal_path, chroot.drive_id)
         .await
         .is_ok()
     {
@@ -817,7 +829,7 @@ async fn handle_mkcol(
     };
 
     let parent_folder = match folder_service
-        .get_folder_by_path(&parent_path, user.id)
+        .get_folder_by_path(&parent_path, chroot.drive_id)
         .await
     {
         Ok(folder) => folder,
@@ -861,7 +873,7 @@ async fn handle_delete(
     // This is what Nextcloud clients expect — items appear in the trashbin.
     if let Some(trash_svc) = state.trash_service.as_ref() {
         if let Ok(folder) = folder_service
-            .get_folder_by_path(&internal_path, user.id)
+            .get_folder_by_path(&internal_path, chroot.drive_id)
             .await
         {
             trash_svc
@@ -873,7 +885,10 @@ async fn handle_delete(
                 .body(Body::empty())
                 .unwrap());
         }
-        if let Ok(file) = file_service.get_file_by_path(&internal_path).await {
+        if let Ok(file) = file_service
+            .get_file_by_path(&internal_path, chroot.drive_id)
+            .await
+        {
             trash_svc
                 .move_to_trash(&file.id, "file", user.id)
                 .await
@@ -890,7 +905,7 @@ async fn handle_delete(
     let file_mgmt = &state.applications.file_management_service;
 
     if let Ok(folder) = folder_service
-        .get_folder_by_path(&internal_path, user.id)
+        .get_folder_by_path(&internal_path, chroot.drive_id)
         .await
     {
         folder_service
@@ -904,7 +919,10 @@ async fn handle_delete(
             .unwrap());
     }
 
-    if let Ok(file) = file_service.get_file_by_path(&internal_path).await {
+    if let Ok(file) = file_service
+        .get_file_by_path(&internal_path, chroot.drive_id)
+        .await
+    {
         file_mgmt
             .delete_file_with_perms(&file.id, user.id)
             .await
@@ -969,11 +987,11 @@ async fn handle_move(
     // 204-vs-201 selector at response time.
     let dest_internal_precheck = nc_to_internal_path(chroot, &dest_subpath)?;
     let dest_existing_file = file_service
-        .get_file_by_path(&dest_internal_precheck)
+        .get_file_by_path(&dest_internal_precheck, chroot.drive_id)
         .await
         .ok();
     let dest_existing_folder = folder_service
-        .get_folder_by_path(&dest_internal_precheck, user.id)
+        .get_folder_by_path(&dest_internal_precheck, chroot.drive_id)
         .await
         .ok();
     let dest_existed_before = dest_existing_file.is_some() || dest_existing_folder.is_some();
@@ -1016,7 +1034,10 @@ async fn handle_move(
     };
 
     // Try as file first.
-    if let Ok(file) = file_service.get_file_by_path(&src_internal).await {
+    if let Ok(file) = file_service
+        .get_file_by_path(&src_internal, chroot.drive_id)
+        .await
+    {
         let (dest_parent_sub, dest_name) = match dest_subpath.rsplit_once('/') {
             Some((parent, name)) => (parent, name),
             None => ("", dest_subpath.as_str()),
@@ -1038,7 +1059,7 @@ async fn handle_move(
         } else {
             // Different parent → move.
             let dest_parent = folder_service
-                .get_folder_by_path(&dest_parent_internal, user.id)
+                .get_folder_by_path(&dest_parent_internal, chroot.drive_id)
                 .await
                 .map_err(|_| AppError::not_found("Destination folder not found"))?;
 
@@ -1062,7 +1083,10 @@ async fn handle_move(
         // existed — RFC 4918 §9.9.4 distinguishes create vs overwrite).
         let dest_internal = nc_to_internal_path(chroot, &dest_subpath)?;
         let mut builder = Response::builder().status(final_status);
-        if let Ok(moved) = file_service.get_file_by_path(&dest_internal).await {
+        if let Ok(moved) = file_service
+            .get_file_by_path(&dest_internal, chroot.drive_id)
+            .await
+        {
             // Route through `FileDto::etag` so the MOVE response
             // matches what a subsequent PROPFIND on the destination
             // will return — `moved.id` (UUID) would differ from the
@@ -1077,7 +1101,7 @@ async fn handle_move(
 
     // Try as folder.
     if let Ok(folder) = folder_service
-        .get_folder_by_path(&src_internal, user.id)
+        .get_folder_by_path(&src_internal, chroot.drive_id)
         .await
     {
         let (dest_parent_sub, dest_name) = match dest_subpath.rsplit_once('/') {
@@ -1107,7 +1131,7 @@ async fn handle_move(
         } else {
             // Different parent → move.
             let dest_parent = folder_service
-                .get_folder_by_path(&dest_parent_internal, user.id)
+                .get_folder_by_path(&dest_parent_internal, chroot.drive_id)
                 .await
                 .map_err(|_| AppError::not_found("Destination parent not found"))?;
 
@@ -1634,6 +1658,8 @@ mod tests {
             path: path.to_string(),
             parent_id: None,
             owner_id: None,
+            // Test stub — path mapper doesn't read drive_id.
+            drive_id: uuid::Uuid::nil(),
             created_at: 0,
             modified_at: 0,
             is_root: false,

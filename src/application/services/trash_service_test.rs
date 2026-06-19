@@ -500,13 +500,18 @@ impl FileReadPort for MockFileRepository {
         unimplemented!()
     }
 
-    async fn get_parent_folder_id(&self, _path: &str) -> std::result::Result<String, DomainError> {
+    async fn get_parent_folder_id(
+        &self,
+        _path: &str,
+        _drive_id: Uuid,
+    ) -> std::result::Result<String, DomainError> {
         unimplemented!()
     }
 
     async fn get_folder_id_by_path(
         &self,
         _folder_path: &str,
+        _drive_id: Uuid,
     ) -> std::result::Result<String, DomainError> {
         unimplemented!()
     }
@@ -709,7 +714,7 @@ impl FolderRepository for MockFolderRepository {
     async fn get_folder_by_path(
         &self,
         _storage_path: &StoragePath,
-        _user_id: Uuid,
+        _drive_id: Uuid,
     ) -> std::result::Result<Folder, DomainError> {
         unimplemented!()
     }
@@ -773,6 +778,7 @@ impl FolderRepository for MockFolderRepository {
     async fn folder_exists(
         &self,
         _storage_path: &StoragePath,
+        _drive_id: Uuid,
     ) -> std::result::Result<bool, DomainError> {
         Ok(false)
     }

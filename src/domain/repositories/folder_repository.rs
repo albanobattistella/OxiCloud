@@ -28,17 +28,17 @@ pub trait FolderRepository: Send + Sync + 'static {
     /// Gets a folder by its ID
     async fn get_folder(&self, id: &str) -> Result<Folder, DomainError>;
 
-    /// Gets a folder by its storage path within the caller's tree.
+    /// Gets a folder by its storage path within a drive's tree.
     ///
-    /// Post-D0, `storage.folders.path` is no longer globally unique —
-    /// multiple users share root-folder names like `"Personal"`. The
-    /// `user_id` filter scopes the lookup to the caller's own folders
-    /// (the equivalent of the pre-D0 implicit user-namespacing that
-    /// came from `My Folder - <username>` paths).
+    /// Post-D0, `storage.folders.path` is unique only within a single
+    /// drive — root-folder names like `"Personal"` repeat across drives.
+    /// The `drive_id` filter scopes the lookup to a specific drive
+    /// (caller derives it from its protocol context: NC chroot, native
+    /// default-drive lookup, WOPI default-drive lookup).
     async fn get_folder_by_path(
         &self,
         storage_path: &StoragePath,
-        user_id: Uuid,
+        drive_id: Uuid,
     ) -> Result<Folder, DomainError>;
 
     /// Lists folders within a parent folder
@@ -87,8 +87,15 @@ pub trait FolderRepository: Send + Sync + 'static {
     /// Deletes a folder
     async fn delete_folder(&self, id: &str) -> Result<(), DomainError>;
 
-    /// Checks if a folder exists at the given path
-    async fn folder_exists(&self, storage_path: &StoragePath) -> Result<bool, DomainError>;
+    /// Checks if a folder exists at the given path within a drive.
+    ///
+    /// Post-D0 `storage.folders.path` is unique only within a single
+    /// drive — the `drive_id` filter scopes the existence check.
+    async fn folder_exists(
+        &self,
+        storage_path: &StoragePath,
+        drive_id: Uuid,
+    ) -> Result<bool, DomainError>;
 
     /// Gets the path of a folder
     async fn get_folder_path(&self, id: &str) -> Result<StoragePath, DomainError>;

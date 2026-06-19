@@ -64,6 +64,7 @@ impl PathResolverService {
                 String,         // path
                 Option<String>, // parent_id
                 Option<String>, // user_id
+                Uuid,           // drive_id
                 i64,            // created_at
                 i64,            // modified_at
                 Option<i64>,    // size
@@ -72,7 +73,7 @@ impl PathResolverService {
             ),
         >(
             r#"
-            SELECT resource_type, id, name, path, parent_id, user_id,
+            SELECT resource_type, id, name, path, parent_id, user_id, drive_id,
                    created_at, modified_at, size, mime_type, folder_id
               FROM (
                 SELECT 'folder'::text       AS resource_type,
@@ -81,6 +82,7 @@ impl PathResolverService {
                        fo.path,
                        fo.parent_id::text,
                        fo.user_id::text,
+                       fo.drive_id,
                        EXTRACT(EPOCH FROM fo.created_at)::bigint AS created_at,
                        EXTRACT(EPOCH FROM fo.updated_at)::bigint AS modified_at,
                        NULL::bigint         AS size,
@@ -102,6 +104,7 @@ impl PathResolverService {
                        END                  AS path,
                        NULL::text           AS parent_id,
                        fi.user_id::text,
+                       fi.drive_id,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint AS created_at,
                        EXTRACT(EPOCH FROM fi.updated_at)::bigint AS modified_at,
                        fi.size,
@@ -136,6 +139,7 @@ impl PathResolverService {
             res_path,
             parent_id,
             uid,
+            drive_id,
             created_at,
             modified_at,
             size,
@@ -151,6 +155,7 @@ impl PathResolverService {
                 path: res_path,
                 parent_id,
                 owner_id: uid,
+                drive_id,
                 created_at: created_at as u64,
                 modified_at: modified_at as u64,
                 is_root: false,

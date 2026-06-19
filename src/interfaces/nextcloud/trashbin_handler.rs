@@ -137,9 +137,12 @@ async fn handle_restore(
         let dest_internal = nc_to_internal_path(chroot, &dest_subpath)?;
         let folder_service = &state.applications.folder_service;
         let file_service = &state.applications.file_retrieval_service;
-        let dest_taken = file_service.get_file_by_path(&dest_internal).await.is_ok()
+        let dest_taken = file_service
+            .get_file_by_path(&dest_internal, chroot.drive_id)
+            .await
+            .is_ok()
             || folder_service
-                .get_folder_by_path(&dest_internal, user.id)
+                .get_folder_by_path(&dest_internal, chroot.drive_id)
                 .await
                 .is_ok();
         if dest_taken {

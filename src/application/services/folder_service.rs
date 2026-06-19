@@ -85,7 +85,7 @@ impl FolderService {
             async fn get_folder_by_path(
                 &self,
                 _path: &str,
-                _user_id: Uuid,
+                _drive_id: Uuid,
             ) -> Result<FolderDto, DomainError> {
                 Ok(FolderDto::empty())
             }
@@ -297,17 +297,17 @@ impl FolderUseCase for FolderService {
         self.get_folder(id).await
     }
 
-    /// Gets a folder by its path, scoped to the caller's tree.
+    /// Gets a folder by its path, scoped to a drive.
     async fn get_folder_by_path(
         &self,
         path: &str,
-        user_id: Uuid,
+        drive_id: Uuid,
     ) -> Result<FolderDto, DomainError> {
         let storage_path = StoragePath::from_string(path);
 
         let folder = self
             .folder_storage
-            .get_folder_by_path(&storage_path, user_id)
+            .get_folder_by_path(&storage_path, drive_id)
             .await
             .map_err(|e| {
                 DomainError::internal_error(

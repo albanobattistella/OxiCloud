@@ -82,11 +82,25 @@ pub trait FileReadPort: Send + Sync + 'static {
     /// Gets the logical storage path of a file.
     async fn get_file_path(&self, id: &str) -> Result<StoragePath, DomainError>;
 
-    /// Gets the parent folder ID from a path (WebDAV).
-    async fn get_parent_folder_id(&self, path: &str) -> Result<String, DomainError>;
+    /// Gets the parent folder ID from a path (WebDAV), scoped to a drive.
+    ///
+    /// Post-D0, `storage.folders.path` is unique only within a single
+    /// drive. The `drive_id` filter scopes the lookup to a specific
+    /// drive (caller derives it from its protocol context: NC chroot,
+    /// native default-drive lookup, WOPI default-drive lookup).
+    async fn get_parent_folder_id(&self, path: &str, drive_id: Uuid)
+    -> Result<String, DomainError>;
 
-    /// Gets a folder ID by its path.
-    async fn get_folder_id_by_path(&self, folder_path: &str) -> Result<String, DomainError>;
+    /// Gets a folder ID by its path, scoped to a drive.
+    ///
+    /// Post-D0 same scoping rule as `get_parent_folder_id` — names like
+    /// `"Personal"` repeat across drives, so the `drive_id` filter is
+    /// required to disambiguate.
+    async fn get_folder_id_by_path(
+        &self,
+        folder_path: &str,
+        drive_id: Uuid,
+    ) -> Result<String, DomainError>;
 
     /// Gets the content-addressable blob hash for a file (O(1) DB lookup).
     ///
@@ -94,11 +108,22 @@ pub trait FileReadPort: Send + Sync + 'static {
     /// Used for dedup reference tracking without loading file content.
     async fn get_blob_hash(&self, file_id: &str) -> Result<String, DomainError>;
 
-    /// Find a file by its logical path (folder_name/.../file_name).
+    /// Find a file by its logical path (folder_name/.../file_name),
+    /// scoped to a drive.
+    ///
+    /// Post-D0 `storage.files.path` is unique only within a single
+    /// drive. The `drive_id` filter prevents non-deterministic
+    /// resolution when the same path exists in multiple drives.
     ///
     /// The default implementation falls back to `list_files(None)` + linear
-    /// scan (O(N)). Repositories should override with a direct SQL query.
-    async fn find_file_by_path(&self, path: &str) -> Result<Option<File>, DomainError> {
+    /// scan (O(N)) and ignores the drive filter — only used by stubs.
+    /// Repositories should override with a direct SQL query that applies
+    /// the filter.
+    async fn find_file_by_path(
+        &self,
+        path: &str,
+        _drive_id: Uuid,
+    ) -> Result<Option<File>, DomainError> {
         let path = path.trim_start_matches('/').trim_end_matches('/');
         let all_files = self.list_files(None).await?;
         for file in all_files {

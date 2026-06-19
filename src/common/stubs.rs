@@ -101,11 +101,19 @@ impl FileReadPort for StubFileReadPort {
         Ok(StoragePath::from_string("/"))
     }
 
-    async fn get_parent_folder_id(&self, _path: &str) -> Result<String, DomainError> {
+    async fn get_parent_folder_id(
+        &self,
+        _path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         Ok("root".to_string())
     }
 
-    async fn get_folder_id_by_path(&self, _folder_path: &str) -> Result<String, DomainError> {
+    async fn get_folder_id_by_path(
+        &self,
+        _folder_path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         Ok("stub-folder-id".to_string())
     }
 
@@ -245,7 +253,7 @@ impl FolderRepository for StubFolderStoragePort {
     async fn get_folder_by_path(
         &self,
         _storage_path: &StoragePath,
-        _user_id: Uuid,
+        _drive_id: Uuid,
     ) -> Result<Folder, DomainError> {
         Ok(Folder::default())
     }
@@ -299,7 +307,11 @@ impl FolderRepository for StubFolderStoragePort {
         Ok(())
     }
 
-    async fn folder_exists(&self, _storage_path: &StoragePath) -> Result<bool, DomainError> {
+    async fn folder_exists(
+        &self,
+        _storage_path: &StoragePath,
+        _drive_id: Uuid,
+    ) -> Result<bool, DomainError> {
         Ok(false)
     }
 
@@ -405,7 +417,7 @@ impl FolderUseCase for StubFolderUseCase {
     async fn get_folder_by_path(
         &self,
         _path: &str,
-        _user_id: Uuid,
+        _drive_id: Uuid,
     ) -> Result<FolderDto, DomainError> {
         Ok(FolderDto::default())
     }
@@ -495,6 +507,7 @@ impl FileUploadUseCase for StubFileUploadUseCase {
     async fn update_file_streaming(
         &self,
         _path: &str,
+        _drive_id: Uuid,
         _blob: StoredBlob,
         _content_type: &str,
         _modified_at: Option<i64>,
@@ -577,7 +590,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
         Ok(Box::new(empty_stream))
     }
 
-    async fn get_file_by_path(&self, _path: &str) -> Result<FileDto, DomainError> {
+    async fn get_file_by_path(&self, _path: &str, _drive_id: Uuid) -> Result<FileDto, DomainError> {
         Err(DomainError::not_found("File", "stub"))
     }
 

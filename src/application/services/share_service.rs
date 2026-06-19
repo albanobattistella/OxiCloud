@@ -838,11 +838,19 @@ mod tests {
             unimplemented!()
         }
 
-        async fn get_parent_folder_id(&self, _path: &str) -> Result<String, DomainError> {
+        async fn get_parent_folder_id(
+            &self,
+            _path: &str,
+            _drive_id: uuid::Uuid,
+        ) -> Result<String, DomainError> {
             unimplemented!()
         }
 
-        async fn get_folder_id_by_path(&self, _folder_path: &str) -> Result<String, DomainError> {
+        async fn get_folder_id_by_path(
+            &self,
+            _folder_path: &str,
+            _drive_id: uuid::Uuid,
+        ) -> Result<String, DomainError> {
             unimplemented!()
         }
 
@@ -925,7 +933,7 @@ mod tests {
         async fn get_folder_by_path(
             &self,
             _storage_path: &crate::domain::services::path_service::StoragePath,
-            _user_id: uuid::Uuid,
+            _drive_id: uuid::Uuid,
         ) -> Result<crate::domain::entities::folder::Folder, DomainError> {
             unimplemented!()
         }
@@ -991,6 +999,7 @@ mod tests {
         async fn folder_exists(
             &self,
             _storage_path: &crate::domain::services::path_service::StoragePath,
+            _drive_id: uuid::Uuid,
         ) -> Result<bool, DomainError> {
             unimplemented!()
         }

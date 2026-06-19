@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use bytes::Bytes;
 use futures::Stream;
+use uuid::Uuid;
 
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
@@ -49,8 +50,12 @@ pub trait FileReadRepository: Send + Sync + 'static {
     /// Gets the logical storage path of a file.
     async fn get_file_path(&self, id: &str) -> Result<StoragePath, DomainError>;
 
-    /// Gets the parent folder ID from a path (WebDAV).
-    async fn get_parent_folder_id(&self, path: &str) -> Result<String, DomainError>;
+    /// Gets the parent folder ID from a path (WebDAV), scoped to a drive.
+    ///
+    /// Post-D0, `storage.folders.path` is unique only within a single
+    /// drive — the `drive_id` filter scopes the lookup.
+    async fn get_parent_folder_id(&self, path: &str, drive_id: Uuid)
+    -> Result<String, DomainError>;
 }
 
 // ─────────────────────────────────────────────────────

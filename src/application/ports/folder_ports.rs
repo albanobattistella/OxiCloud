@@ -38,14 +38,18 @@ pub trait FolderUseCase: Send + Sync + 'static {
 
     /// Gets a folder by its path within the caller's tree.
     ///
-    /// Scoped by `user_id` because `storage.folders.path` is unique
-    /// only within a single user's drive after D0 — multiple users
-    /// share names like `"Personal"` for their default-drive root
-    /// folder (docs/plan/drive.md §10). Pre-D0 the wrapper name
-    /// embedded the username and made the path globally unique;
-    /// post-D0 the caller_id filter is required.
-    async fn get_folder_by_path(&self, path: &str, user_id: Uuid)
-    -> Result<FolderDto, DomainError>;
+    /// Scoped by `drive_id` because `storage.folders.path` is unique
+    /// only within a single drive after D0 — multiple drives (whether
+    /// owned by the same user or different users) share names like
+    /// `"Personal"` for their root folder (docs/plan/drive.md §10).
+    /// Pre-D0 the wrapper name embedded the username; post-D0 the
+    /// caller derives a `drive_id` from its protocol context (NC
+    /// chroot, native default-drive lookup, WOPI default-drive).
+    async fn get_folder_by_path(
+        &self,
+        path: &str,
+        drive_id: Uuid,
+    ) -> Result<FolderDto, DomainError>;
 
     /// Lists folders within a parent folder
     async fn list_folders(&self, parent_id: Option<&str>) -> Result<Vec<FolderDto>, DomainError>;

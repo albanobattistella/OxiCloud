@@ -821,6 +821,10 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             path,
             parent_id: row.parent_id.map(|u| u.to_string()),
             owner_id: Some(row.owner_id.to_string()),
+            // Trash listing — drive_id is informational and the trash
+            // row doesn't currently SELECT it. Path-based lookups
+            // never enter this code path.
+            drive_id: uuid::Uuid::nil(),
             created_at: row.resource_created_at.timestamp() as u64,
             modified_at: row.modified_at.timestamp() as u64,
             is_root: false,

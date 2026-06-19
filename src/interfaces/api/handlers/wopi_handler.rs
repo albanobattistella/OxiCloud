@@ -23,6 +23,7 @@ use std::sync::Arc;
 use crate::application::ports::file_ports::{FileRetrievalUseCase, FileUploadUseCase};
 use crate::application::services::wopi_lock_service::WopiLockService;
 use crate::application::services::wopi_token_service::WopiTokenService;
+use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::infrastructure::services::wopi_discovery_service::WopiDiscoveryService;
 
 /// Shared state for WOPI handlers.
@@ -233,11 +234,31 @@ async fn put_file(
     };
 
     // ── Atomic store: swap the file row onto the ingested blob ──
+    // `drive_id` scopes the path-based lookups in `update_file_streaming`
+    // post-D0. WOPI tokens carry the user UUID in `claims.sub`; we resolve
+    // that to the caller's default drive (WOPI today is a single-drive
+    // editing surface — no drive marker travels in the token).
+    let claims_sub_uuid = match uuid::Uuid::parse_str(&claims.sub) {
+        Ok(u) => u,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    let drive_id = match state
+        .app_state
+        .drive_repo
+        .find_default_for_user(claims_sub_uuid)
+        .await
+    {
+        Ok(d) => d.drive.id,
+        Err(e) => {
+            tracing::error!("WOPI PutFile: default-drive lookup failed: {:?}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     let result = state
         .app_state
         .applications
         .file_upload_service
-        .update_file_streaming(&file.path, ingested.stored(), &content_type, None)
+        .update_file_streaming(&file.path, drive_id, ingested.stored(), &content_type, None)
         .await;
 
     match result {

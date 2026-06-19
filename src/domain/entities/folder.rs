@@ -29,6 +29,13 @@ pub struct Folder {
     /// `None` only for legacy/stub folders; real folders always have an owner.
     owner_id: Option<Uuid>,
 
+    /// Drive that owns this folder. Post-D0 every `storage.folders` row
+    /// has `drive_id NOT NULL` (M3 migration). Path-based lookups scope
+    /// by this axis (not by `user_id`, which is dropped in D7).
+    /// `Uuid::nil()` only for stub/legacy in-memory folders that never
+    /// touched the DB.
+    drive_id: Uuid,
+
     /// Creation timestamp
     created_at: u64,
 
@@ -56,6 +63,7 @@ impl Default for Folder {
             path_string: "/".to_string(),
             parent_id: None,
             owner_id: None,
+            drive_id: Uuid::nil(),
             created_at: 0,
             modified_at: 0,
             tree_modified_at: 0,
@@ -103,6 +111,11 @@ impl Folder {
             path_string,
             parent_id,
             owner_id,
+            // In-memory constructor: callers that don't supply a
+            // drive_id are by definition stub/legacy paths (tests,
+            // pre-D0 fixtures, DTO round-trips). Real DB-backed
+            // folders flow through `with_timestamps_and_tree`.
+            drive_id: Uuid::nil(),
             created_at: now,
             modified_at: now,
             tree_modified_at: now,
@@ -128,6 +141,7 @@ impl Folder {
             storage_path,
             parent_id,
             None,
+            Uuid::nil(),
             created_at,
             modified_at,
             modified_at,
@@ -154,6 +168,7 @@ impl Folder {
             storage_path,
             parent_id,
             owner_id,
+            Uuid::nil(),
             created_at,
             modified_at,
             modified_at,
@@ -162,7 +177,9 @@ impl Folder {
 
     /// Full constructor used by the PG repository when reading rows.
     /// `tree_modified_at` comes from the trigger-maintained column on
-    /// `storage.folders` and feeds [`Folder::etag`].
+    /// `storage.folders` and feeds [`Folder::etag`]. `drive_id` is the
+    /// post-D0 `storage.folders.drive_id NOT NULL` column — every
+    /// path-based lookup scopes by this axis.
     #[allow(clippy::too_many_arguments)]
     pub fn with_timestamps_and_tree(
         id: String,
@@ -170,6 +187,7 @@ impl Folder {
         storage_path: StoragePath,
         parent_id: Option<String>,
         owner_id: Option<Uuid>,
+        drive_id: Uuid,
         created_at: u64,
         modified_at: u64,
         tree_modified_at: u64,
@@ -188,6 +206,7 @@ impl Folder {
             path_string,
             parent_id,
             owner_id,
+            drive_id,
             created_at,
             modified_at,
             tree_modified_at,
@@ -225,6 +244,13 @@ impl Folder {
 
     pub fn owner_id(&self) -> Option<Uuid> {
         self.owner_id
+    }
+
+    /// Drive that owns this folder. Path-based lookups scope by
+    /// this axis (post-D0 invariant: `storage.folders.drive_id`
+    /// is `NOT NULL`).
+    pub fn drive_id(&self) -> Uuid {
+        self.drive_id
     }
 
     /// Latest descendant-write timestamp. Statement-level Postgres
@@ -314,6 +340,11 @@ impl Folder {
             path_string: path,
             parent_id,
             owner_id: None,
+            // DTO round-trips lose drive_id (FolderDto carries it,
+            // but the legacy `from_dto` signature predates this
+            // change). Callers that need real scoping must reload
+            // through the repository.
+            drive_id: Uuid::nil(),
             created_at,
             modified_at,
             tree_modified_at: modified_at,
@@ -353,6 +384,7 @@ impl Folder {
             path_string: new_path_string,
             parent_id: self.parent_id.clone(),
             owner_id: self.owner_id,
+            drive_id: self.drive_id,
             created_at: self.created_at,
             modified_at: now,
             // Renaming bumps both self and descendant rollup —
@@ -389,6 +421,7 @@ impl Folder {
             path_string: new_path_string,
             parent_id,
             owner_id: self.owner_id,
+            drive_id: self.drive_id,
             created_at: self.created_at,
             modified_at: now,
             tree_modified_at: now,
@@ -478,6 +511,7 @@ mod tests {
             StoragePath::from_string("/folder"),
             None,
             None,
+            Uuid::nil(),
             1_000,
             2_000,
             5_000,
@@ -499,6 +533,7 @@ mod tests {
             StoragePath::from_string("/a"),
             None,
             None,
+            Uuid::nil(),
             0,
             0,
             42,
@@ -510,6 +545,7 @@ mod tests {
             StoragePath::from_string("/b"),
             None,
             None,
+            Uuid::nil(),
             0,
             0,
             42,
@@ -532,6 +568,7 @@ mod tests {
             StoragePath::from_string("/folder"),
             None,
             None,
+            Uuid::nil(),
             1_000,
             2_000,
             3_000,
@@ -543,6 +580,7 @@ mod tests {
             StoragePath::from_string("/folder"),
             None,
             None,
+            Uuid::nil(),
             1_000,
             2_000,
             4_000,

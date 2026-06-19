@@ -52,6 +52,12 @@ pub struct FolderDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<String>,
 
+    /// Drive that owns this folder. The scope axis for path-based
+    /// lookups across REST / WebDAV / NextCloud / CalDAV / CardDAV.
+    /// Post-D0 `storage.folders.drive_id` is `NOT NULL`; stub /
+    /// DTO-reconstructed folders carry `Uuid::nil()`.
+    pub drive_id: Uuid,
+
     /// Creation timestamp
     pub created_at: u64,
 
@@ -93,6 +99,7 @@ impl From<Folder> for FolderDto {
             path: folder.path_string().to_string(),
             parent_id: folder.parent_id().map(String::from),
             owner_id: folder.owner_id().map(|u| u.to_string()),
+            drive_id: folder.drive_id(),
             created_at: folder.created_at(),
             modified_at: folder.modified_at(),
             is_root,
@@ -144,6 +151,7 @@ impl FolderDto {
             path: "/stub/path".to_string(),
             parent_id: None,
             owner_id: None,
+            drive_id: Uuid::nil(),
             created_at: 0,
             modified_at: 0,
             is_root: true,

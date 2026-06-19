@@ -286,13 +286,16 @@ impl FileRetrievalUseCase for FileRetrievalService {
     }
 
     // FIXME no authorisation at all
-    async fn get_file_by_path(&self, path: &str) -> Result<FileDto, DomainError> {
+    async fn get_file_by_path(&self, path: &str, drive_id: Uuid) -> Result<FileDto, DomainError> {
         // Direct SQL lookup — O(folder_depth) queries instead of O(total_files)
         // NOTE: This method does NOT perform any authorization check. Callers
         // that surface its result to a user-driven request MUST resolve the
         // file via get_file_owned afterwards, or call authz.require directly.
         // (Tracked in the audit punch-list under "path-based lookups".)
-        if let Some(file) = self.file_read.find_file_by_path(path).await? {
+        // `drive_id` scope axis prevents cross-drive resolution — without
+        // it, `find_file_by_path` would return a non-deterministic row
+        // when the same path exists in multiple drives.
+        if let Some(file) = self.file_read.find_file_by_path(path, drive_id).await? {
             return Ok(FileDto::from(file));
         }
 

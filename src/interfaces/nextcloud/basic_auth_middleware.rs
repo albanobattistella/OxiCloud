@@ -186,7 +186,11 @@ pub async fn basic_auth_middleware(
             use crate::domain::repositories::drive_repository::DriveRepository;
             let chroot = match drive_marker.as_deref() {
                 None => {
-                    match state.drive_repo.find_default_for_user(current_user.id).await {
+                    match state
+                        .drive_repo
+                        .find_default_for_user(current_user.id)
+                        .await
+                    {
                         Ok(drive_with_name) => state
                             .applications
                             .folder_service

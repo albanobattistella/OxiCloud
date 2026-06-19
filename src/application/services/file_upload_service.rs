@@ -348,13 +348,14 @@ impl FileUploadUseCase for FileUploadService {
     async fn update_file_streaming(
         &self,
         path: &str,
+        drive_id: Uuid,
         blob: StoredBlob,
         content_type: &str,
         modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         // Try to find the existing file first
         if let Some(file_read) = &self.file_read
-            && let Some(file) = file_read.find_file_by_path(path).await?
+            && let Some(file) = file_read.find_file_by_path(path, drive_id).await?
         {
             let file_id = file.id().to_string();
             let (new_hash, updated_at) = self
@@ -402,9 +403,15 @@ impl FileUploadUseCase for FileUploadService {
 
         // get_parent_folder_id expects the full file path — it strips the
         // last segment (filename) internally to find the parent folder.
+        // `drive_id` scopes the parent lookup to the same drive as the
+        // incoming write (post-D0 `storage.folders.path` repeats across
+        // drives).
         let parent_id = if path_normalized.contains('/') {
             if let Some(file_read) = &self.file_read {
-                file_read.get_parent_folder_id(path_normalized).await.ok()
+                file_read
+                    .get_parent_folder_id(path_normalized, drive_id)
+                    .await
+                    .ok()
             } else {
                 None
             }

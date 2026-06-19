@@ -101,7 +101,11 @@ impl FileReadPort for MockFileReadPort {
         unimplemented!()
     }
 
-    async fn get_parent_folder_id(&self, _path: &str) -> Result<String, DomainError> {
+    async fn get_parent_folder_id(
+        &self,
+        _path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         unimplemented!()
     }
 
@@ -127,7 +131,11 @@ impl FileReadPort for MockFileReadPort {
         Ok(0)
     }
 
-    async fn get_folder_id_by_path(&self, _folder_path: &str) -> Result<String, DomainError> {
+    async fn get_folder_id_by_path(
+        &self,
+        _folder_path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         unimplemented!()
     }
 

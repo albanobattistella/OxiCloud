@@ -259,6 +259,13 @@ async fn handle_assemble(
     let file_service = &state.applications.file_retrieval_service;
     let folder_service = &state.applications.folder_service;
 
+    // Path-based lookups below scope by `drive_id`. The NC session's
+    // chroot is always populated for path-scoped handlers (see
+    // `NcSession::require_chroot`); the FolderDto carries `drive_id`
+    // post-D0.
+    let chroot = session.require_chroot()?;
+    let drive_id = chroot.drive_id;
+
     // TODO(D1): read the caller's default-drive root folder name from
     // `drives.root_folder_id` instead of hardcoding "Personal". The
     // constant is correct for every default personal drive provisioned
@@ -279,11 +286,19 @@ async fn handle_assemble(
     let content_type = ingested.content_type.clone();
 
     // Check if file exists (update vs create).
-    let existing = file_service.get_file_by_path(&internal_path).await;
+    let existing = file_service
+        .get_file_by_path(&internal_path, drive_id)
+        .await;
 
     let etag: Option<String> = if existing.is_ok() {
         let dto = upload_service
-            .update_file_streaming(&internal_path, ingested.stored(), &content_type, oc_mtime)
+            .update_file_streaming(
+                &internal_path,
+                drive_id,
+                ingested.stored(),
+                &content_type,
+                oc_mtime,
+            )
             .await
             .map_err(|e| AppError::internal_error(format!("Failed to update file: {}", e)))?;
 
@@ -300,7 +315,7 @@ async fn handle_assemble(
 
         use crate::application::ports::folder_ports::FolderUseCase;
         let parent_folder = match folder_service
-            .get_folder_by_path(parent_internal, user.id)
+            .get_folder_by_path(parent_internal, drive_id)
             .await
         {
             Ok(folder) => folder,

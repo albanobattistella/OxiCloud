@@ -27,6 +27,7 @@ use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::folder_service::FolderService;
 use crate::common::di::AppState;
+use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
@@ -247,6 +248,29 @@ async fn resolve_webdav_path(state: &Arc<AppState>, user_id: Uuid, path: &str) -
     }
 }
 
+/// Native WebDAV protocol entry: resolve the caller's default drive
+/// once per handler so every downstream path-based lookup
+/// (`get_folder_by_path`, `get_file_by_path`, `update_file_streaming`)
+/// can pass the same `drive_id` scope.
+///
+/// Post-D0 `storage.{folders,files}.path` repeats across drives — the
+/// scope is mandatory. Native WebDAV today lives in a single-drive
+/// surface (one default drive per user), so the lookup is unambiguous.
+/// Multi-drive support via path segments (`/webdav/drives/<uuid>/…`)
+/// is tracked separately and will derive `drive_id` directly from the
+/// URL instead of going through `find_default_for_user`.
+async fn resolve_drive_id_for_native_webdav(
+    state: &Arc<AppState>,
+    user_id: Uuid,
+) -> Result<Uuid, AppError> {
+    state
+        .drive_repo
+        .find_default_for_user(user_id)
+        .await
+        .map(|d| d.drive.id)
+        .map_err(|e| AppError::internal_error(format!("Failed to resolve default drive: {:?}", e)))
+}
+
 async fn handle_webdav_dispatch(
     state: Arc<AppState>,
     req: Request<Body>,
@@ -405,6 +429,9 @@ async fn handle_propfind(
             path: "".to_string(),
             parent_id: None,
             owner_id: None,
+            // Synthetic root folder for PROPFIND on `/`; not an
+            // actual DB row, so drive_id has no meaningful value.
+            drive_id: Uuid::nil(),
             created_at: Utc::now().timestamp() as u64,
             modified_at: Utc::now().timestamp() as u64,
             is_root: true,
@@ -468,8 +495,11 @@ async fn handle_propfind(
             Err(_) => {}
         }
     } else {
-        // Fallback: legacy double-query path when PathResolver is unavailable
-        if let Ok(folder) = folder_service.get_folder_by_path(&path, user.id).await {
+        // Fallback: legacy double-query path when PathResolver is unavailable.
+        // `drive_id` is mandatory post-D0 for path-based lookups — derive
+        // the caller's default drive once and reuse it for both probes.
+        let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
+        if let Ok(folder) = folder_service.get_folder_by_path(&path, drive_id).await {
             assert_owner(folder.owner_id.as_deref(), &user.id.to_string(), &path)?;
             let folder_id = folder.id.clone();
             return build_streaming_propfind_response(
@@ -484,7 +514,10 @@ async fn handle_propfind(
             )
             .await;
         }
-        if let Ok(file) = file_retrieval_service.get_file_by_path(&path).await {
+        if let Ok(file) = file_retrieval_service
+            .get_file_by_path(&path, drive_id)
+            .await
+        {
             assert_owner(file.owner_id.as_deref(), &user.id.to_string(), &path)?;
             let mut buf = Vec::with_capacity(1024);
             {
@@ -688,10 +721,11 @@ async fn handle_proppatch(
     let is_collection = if path.is_empty() || path == "/" {
         true
     } else {
+        let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
         state
             .applications
             .folder_service
-            .get_folder_by_path(&path, user.id)
+            .get_folder_by_path(&path, drive_id)
             .await
             .is_ok()
     };
@@ -776,9 +810,12 @@ async fn handle_get(
             }
         }
     } else {
-        // Legacy fallback — fetch + ownership check
+        // Legacy fallback — fetch + ownership check. `drive_id` is the
+        // path-lookup scope post-D0 (`storage.files.path` repeats across
+        // drives), derived once from the caller's default drive.
+        let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
         let f = file_retrieval_service
-            .get_file_by_path(&path)
+            .get_file_by_path(&path, drive_id)
             .await
             .map_err(|_e| AppError::not_found(format!("File not found: {}", path)))?;
         assert_owner(f.owner_id.as_deref(), &user.id.to_string(), &path)?;
@@ -876,8 +913,11 @@ async fn handle_head(
         }
     }
 
-    // Fallback: legacy double-query path (with ownership check)
-    if let Ok(folder) = folder_service.get_folder_by_path(&path, user.id).await {
+    // Fallback: legacy double-query path (with ownership check).
+    // `drive_id` is the path-lookup scope post-D0 — derive once and
+    // reuse for both the folder and file probes.
+    let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
+    if let Ok(folder) = folder_service.get_folder_by_path(&path, drive_id).await {
         assert_owner(folder.owner_id.as_deref(), &user.id.to_string(), &path)?;
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -890,7 +930,7 @@ async fn handle_head(
 
     // Try as file — use metadata only, never load content for HEAD
     let file = file_retrieval_service
-        .get_file_by_path(&path)
+        .get_file_by_path(&path, drive_id)
         .await
         .map_err(|_e| AppError::not_found(format!("Resource not found: {}", path)))?;
     assert_owner(file.owner_id.as_deref(), &user.id.to_string(), &path)?;
@@ -939,15 +979,27 @@ async fn resolve_or_legacy(
         return Some(r);
     }
 
+    // Path-lookup scope post-D0 — derive the caller's default drive
+    // for both legacy probes. `find_default_for_user` returning Err
+    // (e.g. external user, or boot before the lifecycle hook fired)
+    // means no fallback resolution is possible: return None.
+    let drive_id = state
+        .drive_repo
+        .find_default_for_user(user_id)
+        .await
+        .ok()?
+        .drive
+        .id;
+
     let user_id_str = user_id.to_string();
     let folder_service = &state.applications.folder_service;
-    if let Ok(folder) = folder_service.get_folder_by_path(path, user_id).await
+    if let Ok(folder) = folder_service.get_folder_by_path(path, drive_id).await
         && folder.owner_id.as_deref() == Some(&user_id_str)
     {
         return Some(ResolvedResource::Folder(folder));
     }
     let file_retrieval = &state.applications.file_retrieval_service;
-    if let Ok(file) = file_retrieval.get_file_by_path(path).await
+    if let Ok(file) = file_retrieval.get_file_by_path(path, drive_id).await
         && file.owner_id.as_deref() == Some(&user_id_str)
     {
         return Some(ResolvedResource::File(file));
@@ -1143,8 +1195,9 @@ async fn handle_put(
 
     // ── Atomic store: swap the file row onto the ingested blob ──
     let content_type = ingested.content_type.clone();
+    let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
     let result = file_upload_service
-        .update_file_streaming(&path, ingested.stored(), &content_type, None)
+        .update_file_streaming(&path, drive_id, ingested.stored(), &content_type, None)
         .await;
 
     match result {
@@ -1198,6 +1251,9 @@ async fn handle_mkcol(
     // Path is already translated by dispatch (e.g. "My Folder - jared/03/01").
     // Walk each segment: the first is the home folder (already exists),
     // subsequent segments are created as needed with proper parent_id.
+    // `drive_id` scopes each per-segment path probe to the caller's default
+    // drive (post-D0 invariant: `storage.folders.path` repeats across drives).
+    let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut parent_id: Option<String> = None;
     let mut accumulated_path = String::new();
@@ -1209,7 +1265,7 @@ async fn handle_mkcol(
         accumulated_path.push_str(segment);
 
         match folder_service
-            .get_folder_by_path(&accumulated_path, user.id)
+            .get_folder_by_path(&accumulated_path, drive_id)
             .await
         {
             Ok(existing) => {
@@ -1395,6 +1451,11 @@ async fn handle_move(
     let file_management_service = &state.applications.file_management_service;
     let folder_service = &state.applications.folder_service;
 
+    // `drive_id` scopes every path-based lookup below to the caller's
+    // default drive (post-D0 invariant: `storage.{files,folders}.path`
+    // repeats across drives).
+    let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
+
     // Check if destination already exists (for Overwrite header compliance)
     if !overwrite {
         let dest_exists = if let Some(resolver) = &state.path_resolver {
@@ -1404,11 +1465,11 @@ async fn handle_move(
                 .unwrap_or(false)
         } else {
             folder_service
-                .get_folder_by_path(&destination_path, user.id)
+                .get_folder_by_path(&destination_path, drive_id)
                 .await
                 .is_ok()
                 || file_retrieval_service
-                    .get_file_by_path(&destination_path)
+                    .get_file_by_path(&destination_path, drive_id)
                     .await
                     .is_ok()
         };
@@ -1447,7 +1508,7 @@ async fn handle_move(
                 parent_id: if dest_parent_path.is_empty() {
                     None
                 } else if let Ok(parent) = folder_service
-                    .get_folder_by_path(dest_parent_path, user.id)
+                    .get_folder_by_path(dest_parent_path, drive_id)
                     .await
                 {
                     assert_owner(
@@ -1488,7 +1549,7 @@ async fn handle_move(
                     None
                 } else {
                     let parent = folder_service
-                        .get_folder_by_path(dest_parent_path, user.id)
+                        .get_folder_by_path(dest_parent_path, drive_id)
                         .await
                         .map_err(|_| {
                             AppError::not_found(format!(
@@ -1606,6 +1667,11 @@ async fn handle_copy(
     let file_retrieval_service = &state.applications.file_retrieval_service;
     let folder_service = &state.applications.folder_service;
 
+    // `drive_id` scopes every path-based lookup below to the caller's
+    // default drive (post-D0 invariant: `storage.{files,folders}.path`
+    // repeats across drives).
+    let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
+
     // Check if destination already exists (for Overwrite header compliance)
     if !overwrite {
         let dest_exists = if let Some(resolver) = &state.path_resolver {
@@ -1615,11 +1681,11 @@ async fn handle_copy(
                 .unwrap_or(false)
         } else {
             folder_service
-                .get_folder_by_path(&destination_path, user.id)
+                .get_folder_by_path(&destination_path, drive_id)
                 .await
                 .is_ok()
                 || file_retrieval_service
-                    .get_file_by_path(&destination_path)
+                    .get_file_by_path(&destination_path, drive_id)
                     .await
                     .is_ok()
         };
@@ -1650,7 +1716,7 @@ async fn handle_copy(
     let target_parent_id = if dest_parent_path.is_empty() {
         None
     } else if let Ok(parent) = folder_service
-        .get_folder_by_path(dest_parent_path, user.id)
+        .get_folder_by_path(dest_parent_path, drive_id)
         .await
     {
         assert_owner(
@@ -1748,10 +1814,11 @@ async fn handle_lock(
     let is_collection = if path.is_empty() || path == "/" {
         true
     } else {
+        let drive_id = resolve_drive_id_for_native_webdav(&state, user.id).await?;
         state
             .applications
             .folder_service
-            .get_folder_by_path(&path, user.id)
+            .get_folder_by_path(&path, drive_id)
             .await
             .is_ok()
     };
