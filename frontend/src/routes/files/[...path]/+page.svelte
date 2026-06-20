@@ -291,14 +291,14 @@
 
 	// Upload at most this many files concurrently. Bounded so one stuck file
 	// blocks only its own lane (the others keep going) without overwhelming the
-	// browser's per-host connection cap or spawning too many delta workers.
-	const UPLOAD_CONCURRENCY = 4;
+	// browser's per-host connection cap, spawning too many delta workers, or
+	// over-contending the server with many large concurrent uploads.
+	const UPLOAD_CONCURRENCY = 3;
 
-	/** Per-file deadline (ms): a tiny file that stops responding fails after 2
-	 *  min; larger files get proportionally longer (20 KB/s floor) so a slow but
-	 *  progressing transfer is never killed. Stops a stuck file pinning its lane
-	 *  forever. */
-	const uploadDeadlineMs = (file: File) => Math.max(120_000, (file.size / (20 * 1024)) * 1000);
+	/** Outer backstop deadline (ms). The plain-upload path already self-aborts on
+	 *  a stalled connection (see `uploadFileWithProgress`); this only catches a
+	 *  wedged delta worker or by-hash request so a lane can never hang forever. */
+	const FILE_BACKSTOP_MS = 4 * 60_000;
 
 	/** Reject after `ms` if `p` hasn't settled. */
 	function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -388,7 +388,7 @@
 							},
 							owned.get(file) ?? null
 						),
-						uploadDeadlineMs(file)
+						FILE_BACKSTOP_MS
 					);
 				} catch (e) {
 					failures++;

@@ -76,10 +76,28 @@ export function uploadFileWithProgress(
 		xhr.open('POST', '/api/files/upload');
 		xhr.withCredentials = true;
 		for (const [k, v] of Object.entries(getCsrfHeaders())) xhr.setRequestHeader(k, v);
+
+		// Self-aborting watchdog so a stalled connection can never pin an upload
+		// slot forever (and leave a zombie XHR holding one of the browser's few
+		// per-host connections). While the body is uploading we reset the deadline
+		// on every progress tick — a slow but *moving* transfer is fine; once the
+		// body is fully sent we give the server a fixed window to respond. On a
+		// stall we `xhr.abort()`, which frees the connection immediately.
+		const SEND_STALL_MS = 30_000;
+		const RESPONSE_MS = 60_000;
+		let watchdog: ReturnType<typeof setTimeout>;
+		const arm = (ms: number) => {
+			clearTimeout(watchdog);
+			watchdog = setTimeout(() => xhr.abort(), ms);
+		};
+
 		xhr.upload.onprogress = (e) => {
 			onProgress(e.lengthComputable ? e.loaded / e.total : NaN);
+			arm(SEND_STALL_MS);
 		};
+		xhr.upload.onload = () => arm(RESPONSE_MS); // body sent — wait for the server
 		xhr.onload = () => {
+			clearTimeout(watchdog);
 			if (xhr.status >= 200 && xhr.status < 300) resolve();
 			else {
 				// Flag quota so a batch can stop early instead of retrying every file.
@@ -88,7 +106,15 @@ export function uploadFileWithProgress(
 				reject(err);
 			}
 		};
-		xhr.onerror = () => reject(new Error('upload failed: network error'));
+		xhr.onerror = () => {
+			clearTimeout(watchdog);
+			reject(new Error('upload failed: network error'));
+		};
+		xhr.onabort = () => {
+			clearTimeout(watchdog);
+			reject(new Error('upload stalled — aborted'));
+		};
+		arm(SEND_STALL_MS);
 		xhr.send(form);
 	});
 }
