@@ -112,7 +112,14 @@ pub fn content_security_policy(config: &AppConfig) -> String {
         );
     }
 
-    let mut script_src = String::from("script-src 'self'");
+    // `'wasm-unsafe-eval'` is required for WebAssembly compilation/instantiation
+    // under a strict CSP (Chromium blocks `WebAssembly.instantiate` otherwise with
+    // "Wasm code generation disallowed by embedder"). The frontend instantiates the
+    // vendored BLAKE3/FastCDC WASM both on the main thread (instant by-hash uploads)
+    // and inside the delta-upload worker; without this they throw and every large
+    // file silently falls back to a plain byte upload. It is the WASM-only, safe
+    // variant — it does NOT permit `eval()`/`new Function()` (no `'unsafe-eval'`).
+    let mut script_src = String::from("script-src 'self' 'wasm-unsafe-eval'");
     for hash in &hashes {
         script_src.push(' ');
         script_src.push_str(hash);

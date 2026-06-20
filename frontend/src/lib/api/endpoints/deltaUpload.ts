@@ -80,14 +80,33 @@ export function tryDeltaUpload(
 		const timeoutMs = DELTA_TIMEOUT_BASE_MS + Math.ceil(sizeGB) * DELTA_TIMEOUT_PER_GB_MS;
 		let savedBytes = 0;
 
+		let stallTimer: ReturnType<typeof setTimeout>;
 		const settle = (answer: DeltaUploadAnswer | null) => {
 			clearTimeout(timer);
+			clearTimeout(stallTimer);
 			worker.terminate();
 			resolve(answer);
 		};
 		const timer = setTimeout(() => settle(null), timeoutMs);
 
+		// Liveness watchdog: a healthy worker posts progress sub-second while it
+		// hashes and uploads. If it goes SILENT this long it is wedged (WASM init
+		// or chunking hung without throwing, emitting neither fallback nor error)
+		// — exactly what freezes a folder upload ~2 min per large file. Disable
+		// delta for this file AND every later one so they fall straight to a plain
+		// upload instead of each burning the full size-scaled delta timeout.
+		const STALL_MS = 20_000;
+		const armStall = () => {
+			clearTimeout(stallTimer);
+			stallTimer = setTimeout(() => {
+				usable = false;
+				settle(null);
+			}, STALL_MS);
+		};
+		armStall();
+
 		worker.onmessage = (event: MessageEvent<WorkerMsg>) => {
+			armStall(); // worker is alive — reset the liveness watchdog
 			const msg = event.data;
 			if (msg.type === 'progress') {
 				savedBytes = msg.reusedBytes;
