@@ -424,6 +424,18 @@ pub struct DatabaseConfig {
     /// Minimum connections for the maintenance pool.
     /// Defaults to 1.
     pub maintenance_min_connections: u32,
+    /// Per-statement timeout (seconds) applied to the **primary** pool via
+    /// `SET statement_timeout` on every connection. Bounds the worst-case query
+    /// so a single runaway statement can't pin a pool slot and starve
+    /// interactive requests (correlated tail-latency cliff). `0` disables it.
+    /// The maintenance pool is always exempt — its batch jobs (integrity scans,
+    /// GC) may legitimately run long. Env: `OXICLOUD_DB_STATEMENT_TIMEOUT_SECS`.
+    pub statement_timeout_secs: u64,
+    /// Interval (seconds) of the background watchdog that samples primary-pool
+    /// saturation and logs a WARN when connections are near exhaustion (the
+    /// signal to raise `max_connections` or hunt slow queries). `0` disables
+    /// it. Default: 30. Env: `OXICLOUD_DB_POOL_MONITOR_INTERVAL_SECS`.
+    pub pool_monitor_interval_secs: u64,
 }
 
 impl Default for DatabaseConfig {
@@ -438,6 +450,8 @@ impl Default for DatabaseConfig {
             max_lifetime_secs: 1800,
             maintenance_max_connections: 5,
             maintenance_min_connections: 1,
+            statement_timeout_secs: 30,
+            pool_monitor_interval_secs: 30,
         }
     }
 }
@@ -1231,6 +1245,20 @@ impl AppConfig {
             && let Ok(val) = min_conn
         {
             config.database.maintenance_min_connections = val;
+        }
+
+        if let Ok(stmt_timeout) =
+            env::var("OXICLOUD_DB_STATEMENT_TIMEOUT_SECS").map(|v| v.parse::<u64>())
+            && let Ok(val) = stmt_timeout
+        {
+            config.database.statement_timeout_secs = val;
+        }
+
+        if let Ok(interval) =
+            env::var("OXICLOUD_DB_POOL_MONITOR_INTERVAL_SECS").map(|v| v.parse::<u64>())
+            && let Ok(val) = interval
+        {
+            config.database.pool_monitor_interval_secs = val;
         }
 
         // Auth configuration

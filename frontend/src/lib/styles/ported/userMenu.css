@@ -177,6 +177,10 @@
     cursor: pointer;
     transition: background 0.15s ease;
     text-align: left;
+    /* The link rows (`<a class="user-menu-item">` — admin panel, groups,
+       profile) are styled as menu rows, not hyperlinks; drop the default
+       <a> underline so they match the <button> rows. */
+    text-decoration: none;
 }
 
 .user-menu-item:hover,

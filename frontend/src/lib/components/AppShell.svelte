@@ -261,7 +261,7 @@
 <div class="sidebar" class:open={sidebarOpen}>
 	<a href="/files" class="logo-container">
 		<div class="logo">
-			<svg viewBox="120 120 280 280" aria-hidden="true">
+			<svg viewBox="95 67 320 320" aria-hidden="true">
 				<path
 					d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z"
 				/>
@@ -302,7 +302,7 @@
 						session.user.storage_quota_bytes
 					)}
 				{:else}
-					{formatBytes(session.user.storage_used_bytes)} {t('storage.used', 'used')}
+					{formatBytes(session.user.storage_used_bytes)}
 				{/if}
 			</div>
 		</div>
@@ -526,7 +526,19 @@
 								<div class="user-menu-storage-fill" style:width="{storagePct}%"></div>
 							</div>
 							<div class="user-menu-storage-text">
-								{Math.round(storagePct)}% {t('storage.used', 'used')}
+								{#if session.user.storage_quota_bytes > 0}
+									{t(
+										'storage.used',
+										{
+											percentage: Math.round(storagePct),
+											used: formatBytes(session.user.storage_used_bytes),
+											total: formatBytes(session.user.storage_quota_bytes)
+										},
+										'{{percentage}}% used ({{used}} / {{total}})'
+									)}
+								{:else}
+									{formatBytes(session.user.storage_used_bytes)}
+								{/if}
 							</div>
 						</div>
 					{/if}
@@ -661,7 +673,7 @@
 	<div class="about-overlay" onclick={(e) => e.target === e.currentTarget && (aboutOpen = false)}>
 		<div class="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-modal-title">
 			<div class="about-modal__logo">
-				<svg viewBox="120 120 280 280" aria-hidden="true">
+				<svg viewBox="95 67 320 320" aria-hidden="true">
 					<path
 						d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z"
 					/>
@@ -1071,8 +1083,10 @@
 	}
 
 	.about-modal__logo {
-		width: 64px;
-		height: 64px;
+		/* 73px (not 64) so the cloud keeps its rendered scale after the viewBox
+		   grew 280→320 to stop clipping its left bulge: 73/320 ≈ 64/280. */
+		width: 73px;
+		height: 73px;
 		color: var(--color-accent);
 	}
 

@@ -66,6 +66,25 @@ impl FileRetrievalService {
 
     // ── private helpers ──────────────────────────────────────────
 
+    /// Read a file's full content through the streaming API into a single
+    /// `Bytes` buffer. Working memory stays at one chunk while reading; the
+    /// returned buffer holds the whole (sub-threshold) file.
+    async fn read_full(
+        file_read: &FileBlobReadRepository,
+        id: &str,
+        capacity: usize,
+    ) -> Result<Bytes, DomainError> {
+        let stream = file_read.get_file_stream(id).await?;
+        let mut stream = Pin::from(stream);
+        let mut buf = BytesMut::with_capacity(capacity);
+        while let Some(chunk) = stream.next().await {
+            buf.extend_from_slice(&chunk.map_err(|e| {
+                DomainError::internal_error("File", format!("Stream read error: {}", e))
+            })?);
+        }
+        Ok(buf.freeze())
+    }
+
     /// Helper: require the caller has `perm` on the given file id.
     /// Fail-closed if no engine was injected (stub/test path).
     async fn require_file(
@@ -162,60 +181,31 @@ impl FileRetrievalService {
 
         // ── Tier 1: Hot cache + transcode (<10 MB) ──────────
         if file_size < CACHE_THRESHOLD {
-            // Check content cache first (keyed by blob hash — see above)
-            if cacheable
-                && let Some(cache) = &self.content_cache
-                && let Some((cached, _etag, _ct)) = cache.get(&cache_key).await
-            {
-                debug!(
-                    "🔥 TIER 1 Cache HIT: {} ({} bytes)",
-                    file_name,
-                    cached.len()
-                );
-                if do_transcode
-                    && let Some((t, m)) = self
-                        .try_transcode(id, &cached, &mime_type, file_size, true)
-                        .await
-                {
-                    return Ok((
-                        dto,
-                        OptimizedFileContent::Bytes {
-                            data: t,
-                            mime_type: m,
-                            was_transcoded: true,
-                        },
-                    ));
-                }
-                return Ok((
-                    dto,
-                    OptimizedFileContent::Bytes {
-                        data: cached,
-                        mime_type: mime_type.clone(),
-                        was_transcoded: false,
-                    },
-                ));
-            }
-
-            // Cache miss – load from disk via streaming (constant 64 KB memory)
-            debug!("💾 TIER 1 Cache MISS: {} – loading from disk", file_name);
-            let stream = self.file_read.get_file_stream(id).await?;
-            let mut stream = std::pin::Pin::from(stream);
-            let mut buf = BytesMut::with_capacity(file_size as usize);
-            while let Some(chunk) = stream.next().await {
-                buf.extend_from_slice(&chunk.map_err(|e| {
-                    DomainError::internal_error("File", format!("Stream read error: {}", e))
-                })?);
-            }
-            let content_bytes = buf.freeze();
-
-            // Store in cache (keyed by blob hash; ETag = the immutable hash)
-            if cacheable && let Some(cache) = &self.content_cache {
+            // Fetch the raw blob bytes. When cacheable, `get_or_load` serves
+            // from the content cache on a hit and, on a miss, coalesces every
+            // concurrent request for the same blob hash into a SINGLE disk read
+            // (single-flight) — no thundering herd under load. Hash-less stub
+            // DTOs are uncacheable and stream straight from disk.
+            let content_bytes = if cacheable && let Some(cache) = &self.content_cache {
                 let etag: Arc<str> = format!("\"{}\"", cache_key).into();
                 let ct: Arc<str> = mime_type.clone();
-                cache
-                    .put(cache_key.clone(), content_bytes.clone(), etag, ct)
-                    .await;
-            }
+                let file_read = Arc::clone(&self.file_read);
+                let id_owned = id.to_string();
+                let cap = file_size as usize;
+                let (bytes, _etag, _ct) = cache
+                    .get_or_load(cache_key.clone(), etag, ct, async move {
+                        debug!("💾 TIER 1 Cache MISS: {} – loading from disk", id_owned);
+                        Self::read_full(&file_read, &id_owned, cap).await
+                    })
+                    .await?;
+                bytes
+            } else {
+                debug!(
+                    "💾 TIER 1 (uncacheable): {} – streaming from disk",
+                    file_name
+                );
+                Self::read_full(&self.file_read, id, file_size as usize).await?
+            };
 
             if do_transcode
                 && let Some((t, m)) = self

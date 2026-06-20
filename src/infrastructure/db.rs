@@ -45,6 +45,7 @@ pub async fn create_database_pools(config: &AppConfig) -> Result<DbPools> {
         config.database.connect_timeout_secs,
         config.database.idle_timeout_secs,
         config.database.max_lifetime_secs,
+        config.database.statement_timeout_secs,
         "primary",
     )
     .await?;
@@ -68,6 +69,8 @@ pub async fn create_database_pools(config: &AppConfig) -> Result<DbPools> {
         config.database.connect_timeout_secs,
         config.database.idle_timeout_secs,
         config.database.max_lifetime_secs,
+        // Maintenance pool is exempt: integrity scans / GC may run long.
+        0,
         "maintenance",
     )
     .await?;
@@ -87,6 +90,7 @@ pub async fn create_database_pools(config: &AppConfig) -> Result<DbPools> {
 }
 
 /// Internal helper: create a single pool with retry logic.
+#[allow(clippy::too_many_arguments)]
 async fn create_pool_with_retries(
     connection_string: &str,
     max_connections: u32,
@@ -94,6 +98,7 @@ async fn create_pool_with_retries(
     connect_timeout_secs: u64,
     idle_timeout_secs: u64,
     max_lifetime_secs: u64,
+    statement_timeout_secs: u64,
     label: &str,
 ) -> Result<PgPool> {
     let mut attempt = 0;
@@ -108,7 +113,7 @@ async fn create_pool_with_retries(
             MAX_ATTEMPTS
         );
 
-        match PgPoolOptions::new()
+        let mut opts = PgPoolOptions::new()
             .max_connections(max_connections)
             .min_connections(min_connections)
             .acquire_timeout(Duration::from_secs(connect_timeout_secs))
@@ -119,10 +124,26 @@ async fn create_pool_with_retries(
             // that extra round-trip per checkout costs more than the rare dead
             // connection it catches. A stale socket surfaces as a query error
             // and the pool recycles it either way.
-            .test_before_acquire(false)
-            .connect(connection_string)
-            .await
-        {
+            .test_before_acquire(false);
+
+        // Bound the worst-case query: `SET statement_timeout` on every new
+        // connection caps how long any single statement may run, so a runaway
+        // query can't pin a pool slot and starve interactive requests. `0`
+        // disables it (maintenance pool). statement_timeout's integer value is
+        // milliseconds.
+        if statement_timeout_secs > 0 {
+            use sqlx::Executor;
+            let stmt_ms = statement_timeout_secs.saturating_mul(1000);
+            opts = opts.after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(format!("SET statement_timeout = {stmt_ms}").as_str())
+                        .await?;
+                    Ok(())
+                })
+            });
+        }
+
+        match opts.connect(connection_string).await {
             Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
                 Ok(_) => {
                     tracing::info!("PostgreSQL {} pool established successfully", label);

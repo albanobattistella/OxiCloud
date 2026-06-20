@@ -222,7 +222,7 @@ impl ImageTranscodeService {
     ) -> Result<(Bytes, String, bool), String> {
         let cache_key = format!("{}:{}", file_id, target_format.extension());
 
-        // ── 1. Check moka memory cache (lock-free read) ──
+        // ── 1. Fast path: moka memory cache (lock-free read) ──
         // An empty-Bytes entry is the negative sentinel: "transcoding this
         // file is not beneficial — serve the original". Without it, every
         // GET of such an image repeated the full decode + encode just to
@@ -237,18 +237,52 @@ impl ImageTranscodeService {
             return Ok((cached, target_format.mime_type().to_string(), true));
         }
 
-        // ── 2. Check disk cache (async fs) ──
+        // ── 2. Slow path: single-flight coalescing ──
+        // A viral image requested as WebP by N clients at once would otherwise
+        // run N identical disk reads + CPU transcodes, saturating the rayon
+        // pool and inflating tail latency. `try_get_with` collapses every
+        // concurrent miss for this key into ONE `compute_transcode`; the other
+        // callers await its result. The cached value (transcoded bytes, or the
+        // empty negative sentinel) is what gets stored.
+        let original_for_loader = original_content.clone(); // O(1) ref-count bump
+        let cached = self
+            .memory_cache
+            .try_get_with(cache_key, async {
+                self.compute_transcode(file_id, original_for_loader, original_mime, target_format)
+                    .await
+            })
+            .await
+            // try_get_with shares one `Arc<String>` across waiters; DomainError
+            // here is just a String, so hand callers an owned clone.
+            .map_err(|shared: Arc<String>| (*shared).clone())?;
+
+        if cached.is_empty() {
+            Ok((original_content, original_mime.to_string(), false))
+        } else {
+            Ok((cached, target_format.mime_type().to_string(), true))
+        }
+    }
+
+    /// Compute the value to cache for `(file_id, target_format)`: either the
+    /// transcoded WebP bytes, or an **empty `Bytes` negative sentinel** meaning
+    /// "the result wasn't smaller — serve the original". Runs the disk-cache
+    /// lookups and the CPU transcode, and is invoked at most once per key,
+    /// guarded by [`Self::get_transcoded`]'s `try_get_with` single-flight.
+    async fn compute_transcode(
+        &self,
+        file_id: &str,
+        original_content: Bytes,
+        original_mime: &str,
+        target_format: OutputFormat,
+    ) -> Result<Bytes, String> {
+        // ── Disk cache (async fs) ──
         let cache_path = self.get_cache_path(file_id, target_format);
         if tokio::fs::try_exists(&cache_path).await.unwrap_or(false) {
             match fs::read(&cache_path).await {
                 Ok(data) => {
-                    let content = Bytes::from(data);
-                    self.memory_cache
-                        .insert(cache_key.clone(), content.clone())
-                        .await;
                     self.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
                     tracing::debug!("💾 Transcode disk cache HIT: {}", file_id);
-                    return Ok((content, target_format.mime_type().to_string(), true));
+                    return Ok(Bytes::from(data));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to read cached transcode: {}", e);
@@ -256,16 +290,15 @@ impl ImageTranscodeService {
             }
         }
 
-        // ── 2b. Negative verdict persisted on disk (survives restarts) ──
+        // ── Negative verdict persisted on disk (survives restarts) ──
         let skip_marker = self.get_skip_marker_path(file_id, target_format);
         if tokio::fs::try_exists(&skip_marker).await.unwrap_or(false) {
-            self.memory_cache.insert(cache_key, Bytes::new()).await;
             self.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
             tracing::debug!("💾 Transcode negative disk marker HIT: {}", file_id);
-            return Ok((original_content, original_mime.to_string(), false));
+            return Ok(Bytes::new());
         }
 
-        // ── 3. Transcode on dedicated rayon pool (never blocks Tokio) ──
+        // ── Transcode on dedicated rayon pool (never blocks Tokio) ──
         let content_for_rayon = original_content.clone(); // O(1) ref-count bump
         let mime_owned = original_mime.to_string();
 
@@ -282,7 +315,7 @@ impl ImageTranscodeService {
 
         let transcoded_bytes = Bytes::from(transcoded);
 
-        // ── 4. Evaluate savings ──
+        // ── Evaluate savings ──
         let original_size = original_content.len();
         let transcoded_size = transcoded_bytes.len();
 
@@ -293,11 +326,10 @@ impl ImageTranscodeService {
                 original_size,
                 transcoded_size
             );
-            // Remember the negative verdict so the next GET doesn't repeat
-            // the decode + encode: empty-Bytes sentinel in memory (expires
-            // with the cache TTL) + zero-byte marker on disk (survives
-            // restarts; removed by `invalidate` when the file changes).
-            self.memory_cache.insert(cache_key, Bytes::new()).await;
+            // Remember the negative verdict so the next GET doesn't repeat the
+            // decode + encode: the caller caches the empty-Bytes sentinel (TTL)
+            // and we drop a zero-byte marker on disk (survives restarts;
+            // removed by `invalidate` when the file changes).
             let marker = self.get_skip_marker_path(file_id, target_format);
             tokio::spawn(async move {
                 if let Some(parent) = marker.parent() {
@@ -307,12 +339,12 @@ impl ImageTranscodeService {
                     tracing::warn!("Failed to persist transcode skip marker: {}", e);
                 }
             });
-            return Ok((original_content, original_mime.to_string(), false));
+            return Ok(Bytes::new());
         }
 
         let saved = original_size - transcoded_size;
 
-        // ── 5. Persist to disk cache (fire-and-forget) ──
+        // ── Persist to disk cache (fire-and-forget) ──
         let cache_path_clone = cache_path.clone();
         let transcoded_for_disk = transcoded_bytes.clone();
         tokio::spawn(async move {
@@ -324,12 +356,7 @@ impl ImageTranscodeService {
             }
         });
 
-        // ── 6. Store in moka memory cache (lock-free) ──
-        self.memory_cache
-            .insert(cache_key, transcoded_bytes.clone())
-            .await;
-
-        // ── 7. Update stats (lock-free atomics) ──
+        // ── Update stats (lock-free atomics) ──
         self.stats.transcodes.fetch_add(1, Ordering::Relaxed);
         self.stats
             .bytes_saved
@@ -343,11 +370,7 @@ impl ImageTranscodeService {
             (1.0 - transcoded_size as f64 / original_size as f64) * 100.0
         );
 
-        Ok((
-            transcoded_bytes,
-            target_format.mime_type().to_string(),
-            true,
-        ))
+        Ok(transcoded_bytes)
     }
 
     /// Get path for cached transcoded file

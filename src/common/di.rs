@@ -955,6 +955,24 @@ impl AppServiceFactory {
         tracing::info!("Tree-ETag flush service initialized");
     }
 
+    /// Start the primary-pool saturation watchdog (Finding #3). Logs a WARN as
+    /// the user-facing pool approaches exhaustion — the early signal for raising
+    /// `max_connections` or chasing a slow query before tail latency cliffs.
+    /// Skipped when `pool_monitor_interval_secs == 0`.
+    fn start_db_pool_monitor(&self, primary_pool: &Arc<PgPool>) {
+        let interval = self.config.database.pool_monitor_interval_secs;
+        if interval == 0 {
+            return;
+        }
+        crate::infrastructure::services::db_pool_monitor::DbPoolMonitor::new(
+            primary_pool.as_ref().clone(),
+            "primary",
+            self.config.database.max_connections,
+            interval,
+        )
+        .start();
+    }
+
     /// Opens (or rebuilds) the embedded Tantivy content index. Returns the
     /// index plus a reseed flag (true when the on-disk index was missing or
     /// version-stale and must be repopulated from `storage.files`). Any
@@ -1148,6 +1166,8 @@ impl AppServiceFactory {
             storage_usage_service = Some(storage_usage.clone());
 
             self.start_tree_etag_flush_job(&maintenance_pool);
+
+            self.start_db_pool_monitor(&pool);
 
             self.start_content_index_job(&maintenance_pool, &core, content_index);
 

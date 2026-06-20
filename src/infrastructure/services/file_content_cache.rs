@@ -1,5 +1,7 @@
+use crate::common::errors::DomainError;
 use bytes::Bytes;
 use moka::future::Cache;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -152,6 +154,57 @@ impl FileContentCache {
         debug!("Cached file {} ({} bytes)", file_id, size);
     }
 
+    /// Get from cache, or load-and-cache with **single-flight coalescing**.
+    ///
+    /// On a miss, concurrent callers for the same `cache_key` share ONE `load`
+    /// future (moka `try_get_with`) instead of every caller hitting disk — the
+    /// classic thundering-herd / cache-stampede fix. With `N` simultaneous
+    /// requests for the same uncached blob this turns `N` disk reads into `1`
+    /// read plus `N-1` cheap waits, collapsing tail latency under load.
+    ///
+    /// Safe because the cache is content-addressed (key = immutable blob hash):
+    /// the coalesced value is identical for every caller and never goes stale,
+    /// so there is nothing to invalidate.
+    ///
+    /// `etag` / `content_type` describe the loaded content and are only used
+    /// when this call is the one that populates the entry.
+    pub async fn get_or_load<F>(
+        &self,
+        cache_key: String,
+        etag: Arc<str>,
+        content_type: Arc<str>,
+        load: F,
+    ) -> Result<(Bytes, Arc<str>, Arc<str>), DomainError>
+    where
+        F: Future<Output = Result<Bytes, DomainError>>,
+    {
+        // Fast path: lock-free hit (also keeps hit/miss stats meaningful).
+        if let Some(hit) = self.get(&cache_key).await {
+            return Ok(hit);
+        }
+
+        // Slow path: coalesce concurrent misses into a single `load`.
+        let entry = self
+            .cache
+            .try_get_with(cache_key, async move {
+                let content = load.await?;
+                Ok::<CacheEntry, DomainError>(CacheEntry {
+                    content,
+                    etag,
+                    content_type,
+                })
+            })
+            .await
+            // try_get_with hands back `Arc<DomainError>` shared by all waiters;
+            // DomainError isn't Clone (it carries a boxed source), so rebuild a
+            // fresh one preserving the kind / entity / message.
+            .map_err(|shared: Arc<DomainError>| {
+                DomainError::new(shared.kind, shared.entity_type, shared.message.clone())
+            })?;
+
+        Ok((entry.content, entry.etag, entry.content_type))
+    }
+
     /// Remove a file from cache (e.g., when file is deleted or modified)
     pub async fn invalidate(&self, file_id: &str) {
         self.cache.remove(file_id).await;
@@ -301,5 +354,176 @@ mod tests {
         cache.invalidate("file1").await;
 
         assert!(cache.get("file1").await.is_none());
+    }
+
+    /// Correctness of the stampede fix: N concurrent misses for the same key
+    /// must coalesce into exactly ONE load (moka single-flight).
+    #[tokio::test]
+    async fn get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::AtomicUsize;
+
+        let cache = Arc::new(FileContentCache::new(FileContentCacheConfig::default()));
+        let loads = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..64 {
+            let cache = Arc::clone(&cache);
+            let loads = Arc::clone(&loads);
+            handles.push(tokio::spawn(async move {
+                cache
+                    .get_or_load(
+                        "blob-hash".to_string(),
+                        "\"blob-hash\"".into(),
+                        "image/png".into(),
+                        async move {
+                            loads.fetch_add(1, Ordering::SeqCst);
+                            // Slow load so all 64 tasks pile onto the same miss.
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            Ok(Bytes::from_static(b"the-blob-bytes"))
+                        },
+                    )
+                    .await
+            }));
+        }
+
+        for h in handles {
+            let (bytes, _etag, _ct) = h.await.unwrap().unwrap();
+            assert_eq!(&bytes[..], b"the-blob-bytes");
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "64 concurrent misses must trigger exactly ONE load (single-flight)"
+        );
+    }
+
+    /// Before/after benchmark for the cache-stampede fix.
+    ///
+    /// Run with:
+    ///   cargo test --release -p oxicloud bench_stampede -- --ignored --nocapture
+    ///
+    /// Models a viral hot blob: `K` clients request the same uncached key at
+    /// once, and each load contends on a bounded resource (the rayon transcode
+    /// pool / DB pool) with `POOL` permits. Reports work amplification and tail
+    /// latency for the NAIVE get()+put() pattern vs the COALESCED get_or_load().
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "benchmark — run with --ignored --nocapture"]
+    async fn bench_stampede() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Instant;
+        use tokio::sync::Semaphore;
+
+        const K: usize = 128; // concurrent clients, all requesting the SAME hot key
+        const LOAD_MS: u64 = 30; // cost of one expensive load (disk + decode/encode)
+        const POOL: usize = 4; // bounded resource the loads contend on
+
+        // One expensive load: take a permit from the bounded pool, then work.
+        async fn expensive_load(
+            sem: Arc<Semaphore>,
+            loads: Arc<AtomicUsize>,
+            load_ms: u64,
+        ) -> Bytes {
+            let _permit = sem.acquire().await.unwrap();
+            loads.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(load_ms)).await;
+            Bytes::from_static(b"blob")
+        }
+
+        fn pct(sorted: &[u128], p: f64) -> u128 {
+            if sorted.is_empty() {
+                return 0;
+            }
+            let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
+            sorted[idx]
+        }
+
+        // ── Scenario A: NAIVE get() + put() (today's pattern) ──
+        let (naive_ms, naive_lats, naive_loads) = {
+            let cache = Arc::new(FileContentCache::new(FileContentCacheConfig::default()));
+            let sem = Arc::new(Semaphore::new(POOL));
+            let loads = Arc::new(AtomicUsize::new(0));
+            let t0 = Instant::now();
+            let mut handles = Vec::new();
+            for _ in 0..K {
+                let cache = Arc::clone(&cache);
+                let sem = Arc::clone(&sem);
+                let loads = Arc::clone(&loads);
+                handles.push(tokio::spawn(async move {
+                    let r0 = Instant::now();
+                    if cache.get("hot").await.is_some() {
+                        return r0.elapsed().as_millis();
+                    }
+                    let bytes = expensive_load(sem, loads, LOAD_MS).await;
+                    cache
+                        .put("hot".to_string(), bytes, "e".into(), "t".into())
+                        .await;
+                    r0.elapsed().as_millis()
+                }));
+            }
+            let mut lats = Vec::new();
+            for h in handles {
+                lats.push(h.await.unwrap());
+            }
+            lats.sort_unstable();
+            (t0.elapsed().as_millis(), lats, loads.load(Ordering::SeqCst))
+        };
+
+        // ── Scenario B: COALESCED get_or_load() (the fix) ──
+        let (coal_ms, coal_lats, coal_loads) = {
+            let cache = Arc::new(FileContentCache::new(FileContentCacheConfig::default()));
+            let sem = Arc::new(Semaphore::new(POOL));
+            let loads = Arc::new(AtomicUsize::new(0));
+            let t0 = Instant::now();
+            let mut handles = Vec::new();
+            for _ in 0..K {
+                let cache = Arc::clone(&cache);
+                let sem = Arc::clone(&sem);
+                let loads = Arc::clone(&loads);
+                handles.push(tokio::spawn(async move {
+                    let r0 = Instant::now();
+                    cache
+                        .get_or_load("hot".to_string(), "e".into(), "t".into(), async move {
+                            Ok(expensive_load(sem, loads, LOAD_MS).await)
+                        })
+                        .await
+                        .unwrap();
+                    r0.elapsed().as_millis()
+                }));
+            }
+            let mut lats = Vec::new();
+            for h in handles {
+                lats.push(h.await.unwrap());
+            }
+            lats.sort_unstable();
+            (t0.elapsed().as_millis(), lats, loads.load(Ordering::SeqCst))
+        };
+
+        println!(
+            "\n╔══ Cache stampede: K={K} clients on the same hot key, pool={POOL}, load={LOAD_MS}ms ══"
+        );
+        println!("║ pattern                │ loads │ p50(ms) │ p99(ms) │ max(ms) │ wall(ms)");
+        println!(
+            "║ NAIVE get()+put()      │ {naive_loads:>5} │ {:>7} │ {:>7} │ {:>7} │ {naive_ms:>7}",
+            pct(&naive_lats, 0.50),
+            pct(&naive_lats, 0.99),
+            naive_lats.last().copied().unwrap_or(0)
+        );
+        println!(
+            "║ COALESCED get_or_load  │ {coal_loads:>5} │ {:>7} │ {:>7} │ {:>7} │ {coal_ms:>7}",
+            pct(&coal_lats, 0.50),
+            pct(&coal_lats, 0.99),
+            coal_lats.last().copied().unwrap_or(0)
+        );
+        let amp = naive_loads as f64 / coal_loads.max(1) as f64;
+        let p99x = pct(&naive_lats, 0.99) as f64 / pct(&coal_lats, 0.99).max(1) as f64;
+        println!("╚══ {amp:.0}× fewer loads · {p99x:.0}× lower p99 tail latency\n");
+
+        // Guard rails so the benchmark also asserts the win.
+        assert_eq!(coal_loads, 1, "coalesced path must load exactly once");
+        assert!(
+            naive_loads > coal_loads * 10,
+            "naive path should stampede the loader"
+        );
     }
 }

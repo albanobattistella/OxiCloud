@@ -1,5 +1,14 @@
 #![allow(async_fn_in_trait)]
 
+// mimalloc returns freed pages to the OS only when `MIMALLOC_PURGE_DELAY` is
+// low/zero. With the default it retains them, so process RSS clamps at the peak
+// even after the in-memory caches (file content, thumbnails, transcode) expire
+// by TTL. The Dockerfile and docker-compose set `MIMALLOC_PURGE_DELAY=0` so RSS
+// tracks the live working set — benchmarked on musl/aarch64 at ~400 MB
+// reclaimed after a 400 MB alloc→free spike, vs 0 MB by default, at no
+// throughput cost. (jemalloc with `muzzy_decay_ms:0` is an equivalent
+// alternative; mimalloc+env is preferred on the musl/Alpine target — its
+// `background_thread` is unsupported there.)
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

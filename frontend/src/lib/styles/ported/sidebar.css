@@ -91,8 +91,10 @@
 }
 
 .logo svg {
-    width: 22px;
-    height: 22px;
+    /* 25px (not 22) so the cloud keeps its rendered scale after the viewBox
+       grew 280→320 to stop clipping its left bulge: 25/320 ≈ 22/280. */
+    width: 25px;
+    height: 25px;
     fill: var(--color-sidebar-text-active);
 }
 
@@ -147,13 +149,10 @@
 .nav-item.active {
     background-color: var(--color-sidebar-active-bg);
     color: var(--color-sidebar-text-active);
-    border-left-color: var(--color-accent);
     font-weight: var(--weight-semibold);
-
-    [dir="rtl"] & {
-        border-left-color: transparent;
-        border-right-color: var(--color-accent);
-    }
+    /* No coloured left accent — the tinted background + bold weight already
+       read as "active". The base `border-left: 3px solid transparent` is kept
+       on every row so removing the accent causes no horizontal text shift. */
 }
 
 .nav-item i,

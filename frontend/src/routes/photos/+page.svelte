@@ -456,7 +456,7 @@
 
 	{#if selected.size > 0}
 		<div class="batch-bar">
-			<span>{t('files.selected_count', { n: selected.size }, '{{n}} selected')}</span>
+			<span>{t('files.selected_count', { count: selected.size }, '{{count}} selected')}</span>
 			<div class="batch-bar__actions">
 				<Button onclick={downloadSelected}>{t('common.download', 'Download')}</Button>
 				<Button onclick={() => selected.clear()}>{t('common.clear', 'Clear')}</Button>

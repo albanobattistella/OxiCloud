@@ -364,7 +364,8 @@
     "folder": "Carpeta",
     "new_folder": "Nueva carpeta",
     "share": "Compartir",
-    "view": "Ver"
+    "view": "Ver",
+    "selected_count": "{{count}} seleccionados"
   },
   "dialogs": {
     "rename_folder": "Renombrar carpeta",

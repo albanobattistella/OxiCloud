@@ -1213,7 +1213,7 @@
 								<Icon name="times" />
 							</button>
 							<span class="batch-bar-count"
-								>{t('files.selected_count', { n: selectedCount }, '{{n}} selected')}</span
+								>{t('files.selected_count', { count: selectedCount }, '{{count}} selected')}</span
 							>
 						</div>
 						<div class="batch-selection-info">

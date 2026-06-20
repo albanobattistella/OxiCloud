@@ -193,16 +193,6 @@ impl SearchService {
         hasher.finish()
     }
 
-    /// Attempts to retrieve results from the cache.
-    async fn get_from_cache(&self, key: u64) -> Option<Arc<SearchResultsDto>> {
-        self.search_cache.get(&key).await
-    }
-
-    /// Stores results in the cache.
-    async fn store_in_cache(&self, key: u64, results: Arc<SearchResultsDto>) {
-        self.search_cache.insert(key, results).await;
-    }
-
     /// Enrich a FileDto → SearchFileResultDto with server-computed metadata.
     ///
     /// `query_lower` must already be lowercased (empty string when no query).
@@ -522,209 +512,215 @@ impl SearchUseCase for SearchService {
         criteria: SearchCriteriaDto,
         user_id: Uuid,
     ) -> Result<Arc<SearchResultsDto>> {
-        let start = Instant::now();
         let user_id_str = user_id.to_string();
-
-        // Try to get from cache
         let cache_key = Self::create_cache_key(&criteria, &user_id_str);
-        if let Some(cached_results) = self.get_from_cache(cache_key).await {
-            return Ok(cached_results);
-        }
 
-        let query = criteria.name_contains.as_deref().unwrap_or("");
-        // Pre-compute once — avoids N heap allocations inside enrich_file/enrich_folder.
-        let query_lower = query.to_lowercase();
+        // Single-flight: collapse N identical concurrent searches into ONE
+        // execution. `try_get_with` serves the cached result on a hit and, on a
+        // miss, runs the closure exactly once while the other callers await it
+        // — so a burst of identical queries no longer floods Postgres or drains
+        // the connection pool (the old get-from-cache fast path is subsumed).
+        self.search_cache
+            .try_get_with(cache_key, async move {
+                let start = Instant::now();
+                let query = criteria.name_contains.as_deref().unwrap_or("");
+                // Pre-compute once — avoids N heap allocations inside enrich_file/enrich_folder.
+                let query_lower = query.to_lowercase();
 
-        // Content-index candidates (first page only). Feature-off or an
-        // index failure yields an empty set — the search stays name-only.
-        let content_hits = self.lookup_content_hits(&criteria, user_id).await;
+                // Content-index candidates (first page only). Feature-off or an
+                // index failure yields an empty set — the search stays name-only.
+                let content_hits = self.lookup_content_hits(&criteria, user_id).await;
 
-        // For non-recursive searches, use efficient database-level pagination
-        // This avoids loading all files into memory
-        if !criteria.recursive {
-            // Use database-level pagination
-            let (files, total_file_count) = self
-                .file_repository
-                .search_files_paginated(criteria.folder_id.as_deref(), &criteria, user_id)
-                .await?;
+                // For non-recursive searches, use efficient database-level pagination
+                // This avoids loading all files into memory
+                if !criteria.recursive {
+                    // Use database-level pagination
+                    let (files, total_file_count) = self
+                        .file_repository
+                        .search_files_paginated(criteria.folder_id.as_deref(), &criteria, user_id)
+                        .await?;
 
-            // Convert to DTOs and enrich with metadata
-            let file_dtos: Vec<FileDto> = files.into_iter().map(FileDto::from).collect();
-            let mut enriched_files: Vec<SearchFileResultDto> = file_dtos
-                .iter()
-                .map(|f| Self::enrich_file(f, &query_lower))
-                .collect();
+                    // Convert to DTOs and enrich with metadata
+                    let file_dtos: Vec<FileDto> = files.into_iter().map(FileDto::from).collect();
+                    let mut enriched_files: Vec<SearchFileResultDto> = file_dtos
+                        .iter()
+                        .map(|f| Self::enrich_file(f, &query_lower))
+                        .collect();
 
-            // Get folders for this folder (non-recursive, filtered in SQL)
-            let folders = self
-                .folder_repository
-                .search_folders(
-                    criteria.folder_id.as_deref(),
-                    criteria.name_contains.as_deref(),
-                    user_id,
-                    false,
+                    // Get folders for this folder (non-recursive, filtered in SQL)
+                    let folders = self
+                        .folder_repository
+                        .search_folders(
+                            criteria.folder_id.as_deref(),
+                            criteria.name_contains.as_deref(),
+                            user_id,
+                            false,
+                        )
+                        .await?;
+
+                    let filtered_folders: Vec<FolderDto> =
+                        folders.into_iter().map(FolderDto::from).collect();
+
+                    // For folders, apply sorting and pagination in memory (usually fewer folders)
+                    let mut enriched_folders: Vec<SearchFolderResultDto> = filtered_folders
+                        .iter()
+                        .map(|f| Self::enrich_folder(f, &query_lower))
+                        .collect();
+
+                    // Sort folders (cached_key avoids O(N log N) temporary String allocations)
+                    match criteria.sort_by.as_str() {
+                        "name" => {
+                            enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
+                        }
+                        "name_desc" => {
+                            enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
+                        }
+                        "date" => {
+                            enriched_folders.sort_by_key(|f| f.modified_at);
+                        }
+                        "date_desc" => {
+                            enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
+                        }
+                        _ => {
+                            enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
+                        }
+                    }
+
+                    // Blend in content-discovered files before the pagination math.
+                    let added = self
+                        .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
+                        .await?;
+                    let total_file_count = total_file_count + added;
+
+                    let folder_count = enriched_folders.len();
+                    let total_count = total_file_count + folder_count;
+
+                    // Combine and paginate (folders first, then files)
+                    let start_idx = criteria.offset.min(total_count);
+                    let end_idx = (criteria.offset + criteria.limit).min(total_count);
+
+                    let folder_start = start_idx.min(folder_count);
+                    let folder_end = end_idx.min(folder_count);
+                    let paginated_folders = enriched_folders[folder_start..folder_end].to_vec();
+
+                    let file_start = start_idx.saturating_sub(folder_count);
+                    let file_end = end_idx
+                        .saturating_sub(folder_count)
+                        .min(enriched_files.len());
+                    let paginated_files = enriched_files[file_start..file_end].to_vec();
+
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+                    let search_results = Arc::new(SearchResultsDto::new(
+                        paginated_files,
+                        paginated_folders,
+                        criteria.limit,
+                        criteria.offset,
+                        Some(total_count),
+                        elapsed_ms,
+                        criteria.sort_by.clone(),
+                    ));
+
+                    return Ok(search_results);
+                }
+
+                // ── Recursive search via ltree (single SQL query per entity type) ──
+                // Uses PostgreSQL ltree GiST index to find all files and folders
+                // in the subtree in O(1) queries, replacing the O(N) spawn-per-folder
+                // approach that could saturate the connection pool.
+                let (found_files, total_file_count) = self
+                    .file_repository
+                    .search_files_in_subtree(criteria.folder_id.as_deref(), &criteria, user_id)
+                    .await?;
+
+                // Get folders (SQL-filtered, user-scoped, recursive when applicable)
+                let found_folders: Vec<Folder> = self
+                    .folder_repository
+                    .search_folders(
+                        criteria.folder_id.as_deref(),
+                        criteria.name_contains.as_deref(),
+                        user_id,
+                        true,
+                    )
+                    .await?;
+
+                // ── Convert to DTOs and enrich with server-computed metadata ──
+                let file_dtos: Vec<FileDto> = found_files.into_iter().map(FileDto::from).collect();
+                let mut enriched_files: Vec<SearchFileResultDto> = file_dtos
+                    .iter()
+                    .map(|f| Self::enrich_file(f, &query_lower))
+                    .collect();
+
+                let folder_dtos: Vec<FolderDto> =
+                    found_folders.into_iter().map(FolderDto::from).collect();
+                let mut enriched_folders: Vec<SearchFolderResultDto> = folder_dtos
+                    .iter()
+                    .map(|f| Self::enrich_folder(f, &query_lower))
+                    .collect();
+
+                // ── Sort folders (cached_key avoids O(N log N) temporary String allocations) ──
+                match criteria.sort_by.as_str() {
+                    "name" => {
+                        enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
+                    }
+                    "name_desc" => {
+                        enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
+                    }
+                    "date" => {
+                        enriched_folders.sort_by_key(|f| f.modified_at);
+                    }
+                    "date_desc" => {
+                        enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
+                    }
+                    _ => {
+                        enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
+                    }
+                }
+
+                // Blend in content-discovered files before the pagination math.
+                let added = self
+                    .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
+                    .await?;
+                let total_file_count = total_file_count + added;
+
+                // ── Pagination (folders first, then files) ──
+                let folder_count = enriched_folders.len();
+                let total_count = total_file_count + folder_count;
+                let start_idx = criteria.offset.min(total_count);
+                let end_idx = (criteria.offset + criteria.limit).min(total_count);
+
+                let folder_start = start_idx.min(folder_count);
+                let folder_end = end_idx.min(folder_count);
+                let paginated_folders = enriched_folders[folder_start..folder_end].to_vec();
+
+                let file_start = start_idx.saturating_sub(folder_count);
+                let file_end = end_idx
+                    .saturating_sub(folder_count)
+                    .min(enriched_files.len());
+                let paginated_files = enriched_files[file_start..file_end].to_vec();
+
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+
+                let search_results = Arc::new(SearchResultsDto::new(
+                    paginated_files,
+                    paginated_folders,
+                    criteria.limit,
+                    criteria.offset,
+                    Some(total_count),
+                    elapsed_ms,
+                    criteria.sort_by.clone(),
+                ));
+
+                Ok(search_results)
+            })
+            .await
+            .map_err(|shared: Arc<crate::common::errors::DomainError>| {
+                crate::common::errors::DomainError::new(
+                    shared.kind,
+                    shared.entity_type,
+                    shared.message.clone(),
                 )
-                .await?;
-
-            let filtered_folders: Vec<FolderDto> =
-                folders.into_iter().map(FolderDto::from).collect();
-
-            // For folders, apply sorting and pagination in memory (usually fewer folders)
-            let mut enriched_folders: Vec<SearchFolderResultDto> = filtered_folders
-                .iter()
-                .map(|f| Self::enrich_folder(f, &query_lower))
-                .collect();
-
-            // Sort folders (cached_key avoids O(N log N) temporary String allocations)
-            match criteria.sort_by.as_str() {
-                "name" => {
-                    enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
-                }
-                "name_desc" => {
-                    enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
-                }
-                "date" => {
-                    enriched_folders.sort_by_key(|f| f.modified_at);
-                }
-                "date_desc" => {
-                    enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
-                }
-                _ => {
-                    enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
-                }
-            }
-
-            // Blend in content-discovered files before the pagination math.
-            let added = self
-                .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
-                .await?;
-            let total_file_count = total_file_count + added;
-
-            let folder_count = enriched_folders.len();
-            let total_count = total_file_count + folder_count;
-
-            // Combine and paginate (folders first, then files)
-            let start_idx = criteria.offset.min(total_count);
-            let end_idx = (criteria.offset + criteria.limit).min(total_count);
-
-            let folder_start = start_idx.min(folder_count);
-            let folder_end = end_idx.min(folder_count);
-            let paginated_folders = enriched_folders[folder_start..folder_end].to_vec();
-
-            let file_start = start_idx.saturating_sub(folder_count);
-            let file_end = end_idx
-                .saturating_sub(folder_count)
-                .min(enriched_files.len());
-            let paginated_files = enriched_files[file_start..file_end].to_vec();
-
-            let elapsed_ms = start.elapsed().as_millis() as u64;
-
-            let search_results = Arc::new(SearchResultsDto::new(
-                paginated_files,
-                paginated_folders,
-                criteria.limit,
-                criteria.offset,
-                Some(total_count),
-                elapsed_ms,
-                criteria.sort_by.clone(),
-            ));
-
-            self.store_in_cache(cache_key, Arc::clone(&search_results))
-                .await;
-            return Ok(search_results);
-        }
-
-        // ── Recursive search via ltree (single SQL query per entity type) ──
-        // Uses PostgreSQL ltree GiST index to find all files and folders
-        // in the subtree in O(1) queries, replacing the O(N) spawn-per-folder
-        // approach that could saturate the connection pool.
-        let (found_files, total_file_count) = self
-            .file_repository
-            .search_files_in_subtree(criteria.folder_id.as_deref(), &criteria, user_id)
-            .await?;
-
-        // Get folders (SQL-filtered, user-scoped, recursive when applicable)
-        let found_folders: Vec<Folder> = self
-            .folder_repository
-            .search_folders(
-                criteria.folder_id.as_deref(),
-                criteria.name_contains.as_deref(),
-                user_id,
-                true,
-            )
-            .await?;
-
-        // ── Convert to DTOs and enrich with server-computed metadata ──
-        let file_dtos: Vec<FileDto> = found_files.into_iter().map(FileDto::from).collect();
-        let mut enriched_files: Vec<SearchFileResultDto> = file_dtos
-            .iter()
-            .map(|f| Self::enrich_file(f, &query_lower))
-            .collect();
-
-        let folder_dtos: Vec<FolderDto> = found_folders.into_iter().map(FolderDto::from).collect();
-        let mut enriched_folders: Vec<SearchFolderResultDto> = folder_dtos
-            .iter()
-            .map(|f| Self::enrich_folder(f, &query_lower))
-            .collect();
-
-        // ── Sort folders (cached_key avoids O(N log N) temporary String allocations) ──
-        match criteria.sort_by.as_str() {
-            "name" => {
-                enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
-            }
-            "name_desc" => {
-                enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
-            }
-            "date" => {
-                enriched_folders.sort_by_key(|f| f.modified_at);
-            }
-            "date_desc" => {
-                enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
-            }
-            _ => {
-                enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
-            }
-        }
-
-        // Blend in content-discovered files before the pagination math.
-        let added = self
-            .merge_content_hits(content_hits, &mut enriched_files, &criteria, user_id)
-            .await?;
-        let total_file_count = total_file_count + added;
-
-        // ── Pagination (folders first, then files) ──
-        let folder_count = enriched_folders.len();
-        let total_count = total_file_count + folder_count;
-        let start_idx = criteria.offset.min(total_count);
-        let end_idx = (criteria.offset + criteria.limit).min(total_count);
-
-        let folder_start = start_idx.min(folder_count);
-        let folder_end = end_idx.min(folder_count);
-        let paginated_folders = enriched_folders[folder_start..folder_end].to_vec();
-
-        let file_start = start_idx.saturating_sub(folder_count);
-        let file_end = end_idx
-            .saturating_sub(folder_count)
-            .min(enriched_files.len());
-        let paginated_files = enriched_files[file_start..file_end].to_vec();
-
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-
-        let search_results = Arc::new(SearchResultsDto::new(
-            paginated_files,
-            paginated_folders,
-            criteria.limit,
-            criteria.offset,
-            Some(total_count),
-            elapsed_ms,
-            criteria.sort_by.clone(),
-        ));
-
-        // Store in cache — Arc::clone is ~1 ns (atomic increment)
-        self.store_in_cache(cache_key, Arc::clone(&search_results))
-            .await;
-
-        Ok(search_results)
+            })
     }
 
     /// Returns quick suggestions for autocomplete.

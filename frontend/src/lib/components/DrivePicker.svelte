@@ -63,7 +63,11 @@
 	});
 </script>
 
-{#if drivesStore.loaded && drivesStore.drives.length > 0}
+<!-- Only show the drive switcher when there's an actual choice to make. With a
+     single drive (the default personal one) the picker just repeats "Personal"
+     under the Files nav row, so hide it; it reappears the moment a second drive
+     (e.g. a shared one) exists. -->
+{#if drivesStore.loaded && drivesStore.drives.length > 1}
 	<ul class="drive-picker" aria-label={t('drive.picker', 'Drives')}>
 		{#each sortedDrives as d (d.id)}
 			<li class="drive-picker__row" class:drive-picker__row--active={isActive(d)}>
