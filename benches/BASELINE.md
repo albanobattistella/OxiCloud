@@ -227,3 +227,30 @@ Output thumbnails are now exactly `max_dim` on the long side (e.g. 400×266),
 vs the old `image::resize` fit-within which produced 399×266 — a ≤1 px change,
 invisible under the frontend's `object-fit: cover`.
 
+---
+
+# Phase 1.7 — TESTED AND REVERTED (rayon oversubscription)
+
+Hypothesis: `render_all`'s internal `par_iter` over the 3 sizes oversubscribes
+the global rayon pool under load (cpus×3 tasks), capping burst throughput.
+Tested by resizing the 3 sizes **sequentially** (parallelism across images
+only). Measured before/after on 14 cores, two runs each:
+
+| metric                       | before (par_iter) | after (sequential) | verdict |
+|------------------------------|------------------:|-------------------:|---------|
+| **PNG single-image latency** |          12.9 ms  |       **21.3 ms**  | **−66 % WORSE** |
+| JPEG 12 MP single-image      |          57.8 ms  |          58.5 ms   | neutral |
+| Saturated 12 MP (photos/s)   |            155.8  |        170 / 158   | flat (noise) |
+| Semaphore @14 12 MP          |            157.7  |        164 / 157   | flat |
+| Semaphore @28 12 MP          |            160.4  |        162 / 159   | flat |
+
+**Verdict: reverted.** Throughput at the real operating point (14 permits) is
+flat — rayon oversubscription was **not** the bottleneck. The "1.4× not 2×" of
+Phase 1.5 is the single-threaded JPEG decode (which dominates post-shrink) plus
+memory bandwidth, not rayon scheduling; even 28 concurrent renders (84 rayon
+tasks) show no thrash. Meanwhile full-decode formats (PNG) regressed 66 % on
+single-image latency because their resize-from-full-resolution genuinely
+benefits from the per-image parallelism. Net negative → kept `par_iter`.
+
+(Another "measure before believing" result, like the dropped Task 2.1.)
+
