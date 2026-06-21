@@ -43,6 +43,9 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 # Rust, no C toolchain. The `image` crate's zune-jpeg backend can't scale during
 # decode; this can, cutting decode time/RAM ~order-of-magnitude on large photos.
 jpeg-decoder = "0.3"
+# SIMD (AVX2/SSE4.1/NEON) image resizing for thumbnails — far faster than the
+# `image` crate's scalar resampler, and it speeds every format (incl. PNG/WebP).
+fast_image_resize = "5"
 id3 = "1.17"
 mp3-duration = "0.1"
 kamadak-exif = "0.6.1"

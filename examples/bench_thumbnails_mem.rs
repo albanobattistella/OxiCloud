@@ -453,20 +453,29 @@ fn measure_semaphore_throughput(case: &CorpusCase, permits: usize, window: Durat
 // Quality verification helpers (Table C)
 // ---------------------------------------------------------------------------
 
-/// Reference thumbnail: identical resample + q80 JPEG encode as production, but
-/// forced through a **full decode** (no shrink-on-load). Comparing against this
-/// isolates exactly the quality impact of DCT scale-on-decode. EXIF orientation
-/// is not applied here, so only run it on orientation=1 corpus cases.
+/// Reference thumbnail: a **full-resolution decode** + high-quality CatmullRom
+/// resample + q80 JPEG encode — the original (pre-optimisation) quality target.
+/// Comparing the optimised output against this gauges whether shrink-on-load +
+/// SIMD resizing degrades quality. Uses the same exact target dims as production
+/// (`resize_exact`) so the comparison is apples-to-apples, never a dim mismatch.
+/// EXIF orientation is not applied, so only run it on orientation=1 cases.
 fn reference_render_full_decode(bytes: &[u8], max_dim: u32) -> Vec<u8> {
     let img = image::load_from_memory(bytes).expect("ref full decode");
     let (ow, oh) = (img.width(), img.height());
+    // Same fit-to-longest-side dims production computes (see fit_dims()).
     let (nw, nh) = if ow > oh {
-        (max_dim, (oh as f32 * (max_dim as f32 / ow as f32)) as u32)
+        (
+            max_dim,
+            ((oh as f32 * (max_dim as f32 / ow as f32)) as u32).max(1),
+        )
     } else {
-        ((ow as f32 * (max_dim as f32 / oh as f32)) as u32, max_dim)
+        (
+            ((ow as f32 * (max_dim as f32 / oh as f32)) as u32).max(1),
+            max_dim,
+        )
     };
     let rgb = img
-        .resize(nw, nh, image::imageops::FilterType::CatmullRom)
+        .resize_exact(nw, nh, image::imageops::FilterType::CatmullRom)
         .to_rgb8();
     let mut buf = Vec::new();
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);

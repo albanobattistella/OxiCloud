@@ -665,74 +665,93 @@ impl ThumbnailService {
         apply_orientation(img, orientation)
     }
 
+    /// Aspect-ratio-preserving target dimensions so the longest side equals
+    /// `max_dim` (clamped to ≥1 to keep the SIMD resizer happy on extreme ratios).
+    fn fit_dims(src_w: u32, src_h: u32, max_dim: u32) -> (u32, u32) {
+        if src_w > src_h {
+            let ratio = max_dim as f32 / src_w as f32;
+            (max_dim, ((src_h as f32 * ratio) as u32).max(1))
+        } else {
+            let ratio = max_dim as f32 / src_h as f32;
+            (((src_w as f32 * ratio) as u32).max(1), max_dim)
+        }
+    }
+
+    /// Resampling filter per size: Bilinear for the tiny icon (cheap, output is
+    /// 150 px), Lanczos3 for preview/large (highest quality, SIMD-fast here).
+    fn filter_for(size: ThumbnailSize) -> fast_image_resize::FilterType {
+        use fast_image_resize::FilterType;
+        match size {
+            ThumbnailSize::Icon => FilterType::Bilinear,
+            ThumbnailSize::Preview | ThumbnailSize::Large => FilterType::Lanczos3,
+        }
+    }
+
+    /// SIMD-resize an RGB8 source to `dst_w×dst_h` (via `fast_image_resize`,
+    /// AVX2/SSE4.1/NEON) and encode the result as a q80 JPEG.
+    fn encode_thumbnail(
+        src_rgb: &[u8],
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+        filter: fast_image_resize::FilterType,
+    ) -> Result<Vec<u8>, ThumbnailError> {
+        use fast_image_resize::images::{Image, ImageRef};
+        use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
+
+        // Lanczos3 is ideal for downscaling but rings on edges when upscaling;
+        // fall back to a smooth bicubic (CatmullRom) whenever the target is
+        // larger than the source on either axis.
+        let filter = if dst_w > src_w || dst_h > src_h {
+            FilterType::CatmullRom
+        } else {
+            filter
+        };
+
+        let src = ImageRef::new(src_w, src_h, src_rgb, PixelType::U8x3)
+            .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
+        let mut dst = Image::new(dst_w, dst_h, PixelType::U8x3);
+        let opts = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter));
+        Resizer::new()
+            .resize(&src, &mut dst, &opts)
+            .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
+
+        let rgb = image::RgbImage::from_raw(dst_w, dst_h, dst.into_vec())
+            .ok_or_else(|| ThumbnailError::ImageError("resize buffer size mismatch".into()))?;
+        let mut buffer = Vec::new();
+        let encoder = JpegEncoder::new_with_quality(&mut buffer, 80);
+        rgb.write_with_encoder(encoder)
+            .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
+        Ok(buffer)
+    }
+
     fn render_thumbnail_from_data(
         data: &[u8],
         size: ThumbnailSize,
     ) -> Result<Vec<u8>, ThumbnailError> {
         let max_dim = size.max_dimension();
-        let img = Self::decode_oriented(data, max_dim)?;
-
-        let (orig_width, orig_height) = (img.width(), img.height());
-        let (new_width, new_height) = if orig_width > orig_height {
-            let ratio = max_dim as f32 / orig_width as f32;
-            (max_dim, (orig_height as f32 * ratio) as u32)
-        } else {
-            let ratio = max_dim as f32 / orig_height as f32;
-            ((orig_width as f32 * ratio) as u32, max_dim)
-        };
-
-        let filter = match size {
-            ThumbnailSize::Icon => FilterType::Triangle,
-            ThumbnailSize::Preview => FilterType::CatmullRom,
-            ThumbnailSize::Large => FilterType::CatmullRom,
-        };
-        let thumbnail = img.resize(new_width, new_height, filter);
-
-        let rgb = thumbnail.to_rgb8();
-        let mut buffer = Vec::new();
-        let encoder = JpegEncoder::new_with_quality(&mut buffer, 80);
-        rgb.write_with_encoder(encoder)
-            .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-
-        Ok(buffer)
+        let rgb = Self::decode_oriented(data, max_dim)?.into_rgb8();
+        let (sw, sh) = (rgb.width(), rgb.height());
+        let (nw, nh) = Self::fit_dims(sw, sh, max_dim);
+        Self::encode_thumbnail(rgb.as_raw(), sw, sh, nw, nh, Self::filter_for(size))
     }
 
     fn render_all_thumbnails_from_data(
         data: &[u8],
     ) -> Result<Vec<(ThumbnailSize, Bytes)>, ThumbnailError> {
-        // Decode once, shrunk-on-load for the largest size (800 px); all three
-        // sizes are then resampled from this single shared bitmap. Sizing the
-        // shared decode to Large keeps quality for every size while paying the
-        // (now much smaller) decode cost only once.
-        let img = Self::decode_oriented(data, ThumbnailSize::Large.max_dimension())?;
-        let (orig_w, orig_h) = (img.width(), img.height());
+        // Decode once, shrunk-on-load for the largest size (800 px), and convert
+        // to RGB8 once; all three sizes are then SIMD-resampled from this single
+        // shared bitmap (the RGB conversion is no longer repeated per size).
+        let rgb = Self::decode_oriented(data, ThumbnailSize::Large.max_dimension())?.into_rgb8();
+        let (sw, sh) = (rgb.width(), rgb.height());
+        let src = rgb.as_raw().as_slice();
 
         ThumbnailSize::all()
             .par_iter()
             .map(|&size| {
-                let max_dim = size.max_dimension();
-
-                let (new_w, new_h) = if orig_w > orig_h {
-                    let ratio = max_dim as f32 / orig_w as f32;
-                    (max_dim, (orig_h as f32 * ratio) as u32)
-                } else {
-                    let ratio = max_dim as f32 / orig_h as f32;
-                    ((orig_w as f32 * ratio) as u32, max_dim)
-                };
-
-                let filter = match size {
-                    ThumbnailSize::Icon => FilterType::Triangle,
-                    ThumbnailSize::Preview => FilterType::CatmullRom,
-                    ThumbnailSize::Large => FilterType::CatmullRom,
-                };
-                let thumb = img.resize(new_w, new_h, filter);
-
-                let rgb = thumb.to_rgb8();
-                let mut buf = Vec::new();
-                let encoder = JpegEncoder::new_with_quality(&mut buf, 80);
-                rgb.write_with_encoder(encoder)
-                    .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-
+                let (nw, nh) = Self::fit_dims(sw, sh, size.max_dimension());
+                let buf = Self::encode_thumbnail(src, sw, sh, nw, nh, Self::filter_for(size))?;
                 Ok((size, Bytes::from(buf)))
             })
             .collect::<Result<Vec<_>, ThumbnailError>>()
@@ -875,73 +894,14 @@ impl ThumbnailService {
 
             let path = original_path.clone();
 
-            // Single spawn_blocking: 1 read + 1 decode + 3 resize + 3 encode
+            // Single spawn_blocking: read the file once, then run the shared
+            // render path (shrink-on-load decode + SIMD resize) — identical to
+            // the blob variant, so this path gets both optimisations and there
+            // is no duplicated decode/resize logic.
             let results = tokio::task::spawn_blocking(move || {
-                // Single read: load file once into memory
                 let data =
                     std::fs::read(&path).map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-
-                // Safety check: read dimensions from in-memory buffer (no 2nd I/O)
-                let (w, h) = image::ImageReader::new(std::io::Cursor::new(&data))
-                    .with_guessed_format()
-                    .map_err(|e| ThumbnailError::ImageError(e.to_string()))?
-                    .into_dimensions()
-                    .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-                if (w as u64) * (h as u64) > MAX_DECODE_PIXELS {
-                    return Err(ThumbnailError::ImageError(format!(
-                        "Image too large for thumbnail: {w}×{h} ({} MP, max {MAX_DECODE_PIXELS})",
-                        w as u64 * h as u64 / 1_000_000
-                    )));
-                }
-
-                // Full decode from the same in-memory buffer (no 2nd disk read)
-                let img = image::load_from_memory(&data)
-                    .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-
-                // Apply EXIF orientation so thumbnails display correctly
-                let img = {
-                    use crate::infrastructure::services::exif_service::{
-                        ExifService, apply_orientation,
-                    };
-                    let orientation = ExifService::extract(&data)
-                        .and_then(|m| m.orientation)
-                        .unwrap_or(1);
-                    // Free the encoded image data now that image is decoded and EXIF extracted
-                    drop(data);
-                    apply_orientation(img, orientation)
-                };
-
-                let (orig_w, orig_h) = (img.width(), img.height());
-
-                ThumbnailSize::all()
-                    .par_iter()
-                    .map(|&size| {
-                        let max_dim = size.max_dimension();
-
-                        let (new_w, new_h) = if orig_w > orig_h {
-                            let ratio = max_dim as f32 / orig_w as f32;
-                            (max_dim, (orig_h as f32 * ratio) as u32)
-                        } else {
-                            let ratio = max_dim as f32 / orig_h as f32;
-                            ((orig_w as f32 * ratio) as u32, max_dim)
-                        };
-
-                        let filter = match size {
-                            ThumbnailSize::Icon => FilterType::Triangle,
-                            ThumbnailSize::Preview => FilterType::CatmullRom,
-                            ThumbnailSize::Large => FilterType::CatmullRom,
-                        };
-                        let thumb = img.resize(new_w, new_h, filter);
-
-                        let rgb = thumb.to_rgb8();
-                        let mut buf = Vec::new();
-                        let encoder = JpegEncoder::new_with_quality(&mut buf, 80);
-                        rgb.write_with_encoder(encoder)
-                            .map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
-
-                        Ok((size, Bytes::from(buf)))
-                    })
-                    .collect::<Result<Vec<_>, ThumbnailError>>()
+                Self::render_all_thumbnails_from_data(&data)
             })
             .await;
 

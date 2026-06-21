@@ -175,3 +175,55 @@ Measured with a harness that mirrors the **real service path** (Table D:
   already partly fill all cores — the remaining headroom is **Task 1.7**
   (rayon oversubscription).
 
+---
+
+# Phase 1.2 results — SIMD resize (`fast_image_resize`, Lanczos3)
+
+Replaced the `image` crate's scalar resampler with `fast_image_resize`
+(AVX2/SSE4.1/NEON) in the shared `encode_thumbnail` helper; `render_all` now
+converts to RGB8 once and SIMD-resizes the shared buffer per size. Lanczos3 for
+downscaling, CatmullRom when upscaling (avoids Lanczos ringing). Also folded the
+duplicated path-variant `generate_all_sizes_background` into the shared render
+path, so it too gets shrink-on-load + SIMD. "before" = post-1.5 state.
+
+### Single-thread latency `render_all` (ms) and peak heap (MB)
+
+| case      | ms before | ms after | speedup | heap before | heap after |
+|-----------|----------:|---------:|--------:|------------:|-----------:|
+| jpeg_12mp |     60.89 |    56.46 |  1.08×  |        17.6 |    **7.1** |
+| jpeg_24mp |    113.98 |   106.76 |  1.07×  |        24.9 |   **10.1** |
+| jpeg_48mp |    203.29 |   198.75 |  1.02×  |        17.6 |    **7.1** |
+| **png_large** | 33.63 | **12.92** | **2.60×** |    58.4 |   **27.1** |
+| gif_large |     12.93 |     7.99 |  1.62×  |        15.4 |        5.9 |
+| webp_large|     21.15 |    16.89 |  1.25×  |        20.7 |        8.3 |
+| small_300 |     10.64 |     6.37 |  1.67×  |         8.0 |        3.9 |
+
+- **JPEG: only ~6–8 %** — shrink-on-load already shrank the decoded bitmap, so
+  the resize was a small slice of the time. But **peak heap fell another ~2.5×**
+  (7 MB): fir works on tight RGB buffers with no intermediate `DynamicImage`,
+  and RGB conversion now happens once instead of per size.
+- **PNG: 2.6×** (and GIF/WebP 1.25–1.6×) — exactly as predicted: these decode at
+  full resolution (no DCT shrink), so the SIMD resize dominates the win.
+
+### Throughput (≈ +10–15 %, run-to-run noisy)
+
+Saturated 12 MP ≈ 142→157 photos/s; semaphore-bounded 12 MP @ 14 permits
+≈ 134→148. Directionally up; treat as noise-bounded.
+
+### Quality gate (vs full-decode CatmullRom at identical dims)
+
+| case      | SSIM   | PSNR dB |
+|-----------|-------:|--------:|
+| jpeg_12mp | 0.9865 |   47.21 |
+| jpeg_24mp | 0.9923 |   48.73 |
+| jpeg_48mp | 0.9938 |   49.33 |
+| small_300 | 0.9921 |   42.59 |
+
+All **≥ 0.98**. (The upscale case `small_300` needed the Lanczos3→CatmullRom
+upscale rule — Lanczos rings when enlarging; it was 0.954 before that fix.)
+
+### Note
+Output thumbnails are now exactly `max_dim` on the long side (e.g. 400×266),
+vs the old `image::resize` fit-within which produced 399×266 — a ≤1 px change,
+invisible under the frontend's `object-fit: cover`.
+
