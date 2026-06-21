@@ -79,15 +79,30 @@ struct ThumbnailCacheKey {
 /// Images above this are silently skipped — protects against single-image OOM.
 const MAX_DECODE_PIXELS: u64 = 50_000_000;
 
+/// Environment override for the decode-concurrency cap (ops tuning).
+const DECODE_CONCURRENCY_ENV: &str = "OXICLOUD_THUMBNAIL_DECODE_CONCURRENCY";
+
 /// Compute max concurrent thumbnail decode operations at runtime.
-/// Uses half the available CPUs (min 2) to scale with hardware while
-/// bounding peak RAM.  `available_parallelism()` respects cgroup limits
-/// (Docker/K8s) and CPU affinity masks.
+///
+/// Uses all available CPUs (min 2). Before shrink-on-load each decode
+/// materialised the full-resolution RGBA bitmap (~96 MB for a 12 MP photo), so
+/// concurrency was halved to keep peak RAM in check. Decodes are now DCT-shrunk
+/// to the thumbnail size (~18–25 MB regardless of source resolution), so the RAM
+/// ceiling no longer forces throttling and we can saturate every core. Override
+/// with `OXICLOUD_THUMBNAIL_DECODE_CONCURRENCY`. `available_parallelism()`
+/// respects cgroup limits (Docker/K8s) and CPU affinity masks.
 fn max_concurrent_decodes() -> usize {
+    if let Some(n) = std::env::var(DECODE_CONCURRENCY_ENV)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+    {
+        return n;
+    }
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    (cpus / 2).max(2)
+    cpus.max(2)
 }
 
 /// Thumbnail service for generating and caching image thumbnails
@@ -98,9 +113,9 @@ pub struct ThumbnailService {
     cache: moka::future::Cache<ThumbnailCacheKey, Bytes>,
     /// Configured maximum cache weight (for stats reporting)
     max_cache_bytes: u64,
-    /// Limits how many images are decoded in parallel to bound RAM usage.
-    /// Without this, 50 simultaneous uploads would decode 50 bitmaps
-    /// (~96 MB each for 6000×4000) = 4.8 GB peak.
+    /// Limits how many images are decoded in parallel. Post shrink-on-load each
+    /// decode is bounded (~18–25 MB), so this now exists mainly to avoid CPU
+    /// oversubscription rather than to cap RAM; defaults to all cores.
     decode_semaphore: Arc<Semaphore>,
     /// Timeout for thumbnail generation operations to prevent hanging on large images.
     /// Defaults to 30 seconds.

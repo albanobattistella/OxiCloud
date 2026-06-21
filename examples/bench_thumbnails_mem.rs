@@ -19,6 +19,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -199,7 +200,7 @@ fn main() {
     assert!(!corpus.is_empty(), "corpus is empty — generation failed");
 
     println!("\n###########################################################");
-    println!("# Phase 0 baseline — thumbnail render (current `image` crate)");
+    println!("# Thumbnail render harness — current working tree");
     println!("# cores (available_parallelism): {threads}");
     println!("# corpus dir: {}", bench_support::corpus_dir().display());
     println!("# heap = logical allocation high-water mark (not RSS)");
@@ -295,6 +296,38 @@ fn main() {
         );
     }
 
+    // --- Table D: semaphore-bounded throughput (Task 1.5) ---
+    // Mirrors the real service path (Semaphore + spawn_blocking) so we can see
+    // the effect of the decode-concurrency cap. cpus/2 was the old default;
+    // cpus is the new default; cpus*2 checks for diminishing returns.
+    let half = (threads / 2).max(2);
+    let permit_levels = [half, threads, threads * 2];
+    println!("\n== D. Semaphore-bounded throughput (real path: Semaphore+spawn_blocking, 3s) ==");
+    println!(
+        "| {:<17} | {:>7} | {:>11} | {:<22} |",
+        "case", "permits", "photos/sec", "note"
+    );
+    println!("|{:-<19}|{:-<9}|{:-<13}|{:-<24}|", "", "", "", "");
+    for case in corpus
+        .iter()
+        .filter(|c| matches!(c.name, "jpeg_12mp" | "jpeg_24mp"))
+    {
+        for &permits in &permit_levels {
+            let pps = measure_semaphore_throughput(case, permits, Duration::from_secs(3));
+            let note = if permits == half {
+                "cpus/2 (old default)"
+            } else if permits == threads {
+                "cpus (new default)"
+            } else {
+                "cpus*2 (oversubscribed)"
+            };
+            println!(
+                "| {:<17} | {:>7} | {:>11.1} | {:<22} |",
+                case.name, permits, pps, note
+            );
+        }
+    }
+
     write_json(threads, &peak_rows, &tp_rows);
 
     println!(
@@ -367,6 +400,53 @@ fn write_json(threads: usize, peak_rows: &[PeakRow], tp_rows: &[ThroughputRow]) 
     ) {
         eprintln!("could not write {}: {e}", json_path().display());
     }
+}
+
+/// Throughput of the real service path under a decode-concurrency cap: many
+/// concurrent "requests" compete for `permits` slots, each holding its permit
+/// while the CPU-bound render runs on the blocking pool (exactly how
+/// `generate_all_sizes_background` + `decode_semaphore` behave). Returns
+/// photos/sec over `window`.
+fn measure_semaphore_throughput(case: &CorpusCase, permits: usize, window: Duration) -> f64 {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let bytes = Arc::new(case.bytes.clone());
+    rt.block_on(async move {
+        let sem = Arc::new(tokio::sync::Semaphore::new(permits));
+        let counter = Arc::new(AtomicU64::new(0));
+        let start = Instant::now();
+        let deadline = start + window;
+
+        // Oversupply concurrent requests so the semaphore — not the task count —
+        // is the limiter, mirroring a burst of hundreds of uploads.
+        let workers = (permits * 3).max(48);
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let sem = sem.clone();
+            let counter = counter.clone();
+            let bytes = bytes.clone();
+            handles.push(tokio::spawn(async move {
+                while Instant::now() < deadline {
+                    let permit = sem.clone().acquire_owned().await.expect("permit");
+                    let b = bytes.clone();
+                    let res =
+                        tokio::task::spawn_blocking(move || ThumbnailService::bench_render_all(&b))
+                            .await;
+                    drop(permit); // release only after the render finishes
+                    if matches!(res, Ok(Ok(_))) {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            let _ = h.await;
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        counter.load(Ordering::Relaxed) as f64 / elapsed
+    })
 }
 
 // ---------------------------------------------------------------------------

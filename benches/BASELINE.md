@@ -148,7 +148,30 @@ visually indistinguishable). Output bytes unchanged (e.g. 12 MP: 57→58 KB).
 
 ### Follow-ups this unlocked
 - **Task 1.5** (raise `cpus/2` → `cpus`): peak heap no longer scales with MP, so
-  the OOM ceiling that justified halving concurrency is largely gone.
+  the OOM ceiling that justified halving concurrency is largely gone. ✅ done below.
 - The `MAX_DECODE_PIXELS` 50 MP reject could be relaxed — huge JPEGs now decode
   cheaply at 1/8 — but that is a behaviour change, deferred.
+
+---
+
+# Phase 1.5 results — raise decode-concurrency cap (`cpus/2` → `cpus`)
+
+`max_concurrent_decodes()` now defaults to all cores (was half), overridable via
+`OXICLOUD_THUMBNAIL_DECODE_CONCURRENCY`. Safe only because Phase 1.1 decoupled
+peak heap from source resolution.
+
+Measured with a harness that mirrors the **real service path** (Table D:
+`tokio::Semaphore(permits)` + `spawn_blocking`, many concurrent requests),
+14 cores, 3 s window:
+
+| case      | 7 permits (`cpus/2`, old) | 14 permits (`cpus`, new) | 28 (`cpus*2`) |
+|-----------|--------------------------:|-------------------------:|--------------:|
+| jpeg_12mp |                      92.7 |          **133.7 (1.44×)** | 133.3 (—) |
+| jpeg_24mp |                      49.5 |           **69.9 (1.41×)** | 71.1 (+1.7%) |
+
+- **~1.4× throughput** on the real path, for free; peak heap unchanged (17–25 MB).
+- `cpus*2` yields nothing → `cpus` is the right ceiling for CPU-bound work.
+- It's 1.4× not 2× because `render_all` fans its 3 sizes onto rayon, so 7 permits
+  already partly fill all cores — the remaining headroom is **Task 1.7**
+  (rayon oversubscription).
 
