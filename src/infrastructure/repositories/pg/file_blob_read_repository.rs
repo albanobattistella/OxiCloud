@@ -330,6 +330,20 @@ impl FileBlobReadRepository {
             .ok_or_else(|| DomainError::not_found("File", file_id))
     }
 
+    /// Returns `drive_id` for a given file. Drives the permission-floor
+    /// short-circuit in `PgAclEngine::check_inner` — drive membership is
+    /// the baseline floor per `drive.md §5`.
+    pub async fn get_file_drive_id(&self, file_id: &str) -> Result<uuid::Uuid, DomainError> {
+        sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT drive_id FROM storage.files WHERE id = $1::uuid",
+        )
+        .bind(file_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("FileBlobRead", format!("drive_id lookup: {e}")))?
+        .ok_or_else(|| DomainError::not_found("File", file_id))
+    }
+
     /// Creates a stub instance for testing — never hits PG.
     #[cfg(test)]
     pub fn new_stub() -> Self {
