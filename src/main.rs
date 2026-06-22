@@ -126,8 +126,7 @@ fn make_socket(addr: &SocketAddr, reuse_port: bool) -> std::io::Result<Socket> {
     Ok(socket)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Minimal CLI:
     //   --version            Print version + branch + commit hash and exit.
     //   --config <path>      Load env from this file. When given, the default
@@ -186,6 +185,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Build the Tokio runtime explicitly (not via `#[tokio::main]`) so the
+    // worker + blocking pools are sized from the cgroup CPU quota and bounded
+    // — with the `.env` loaded above already in scope. See `build_runtime`.
+    let runtime = build_runtime()?;
+    runtime.block_on(run())
+}
+
+/// Construct the multi-threaded Tokio runtime with explicit, CFS-quota-aware
+/// pool sizes.
+///
+/// `#[tokio::main]` hides two defaults that misbehave under container limits:
+///   • worker threads default to `available_parallelism()`, which honours CPU
+///     affinity but **ignores the CFS quota** (`--cpus` / `cpu.max`) — so on a
+///     2-core-quota container on a 64-core host it spawns 64 workers that
+///     time-slice across 2 cores.
+///   • the blocking pool defaults to a flat **512** threads — a multi-GB RSS
+///     blast radius for this heavy `spawn_blocking` user.
+///
+/// Both come from [`common::runtime::runtime_pool_sizes`] (env-overridable via
+/// `OXICLOUD_WORKER_THREADS` / `OXICLOUD_MAX_BLOCKING_THREADS`). Unset env on an
+/// uncontended host reproduces the previous behaviour.
+fn build_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    let (workers, max_blocking) = common::runtime::runtime_pool_sizes();
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .max_blocking_threads(max_blocking)
+        .thread_name("oxicloud-worker")
+        .enable_all()
+        .build()
+}
+
+/// Async entrypoint, driven by the runtime built in [`main`].
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing.
     //
     // Default access-log policy — two independent directives are
@@ -234,6 +266,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION"),
         env!("GIT_BRANCH"),
         env!("GIT_HASH")
+    );
+
+    // Surface the runtime pool sizing chosen in `build_runtime`. `available`
+    // is what tokio's default would have used; `cgroup_cpu_quota` is the CFS
+    // limit it ignores. When the two diverge, the worker count tracks the
+    // smaller (effective) value — the whole point of the explicit builder.
+    let (rt_workers, rt_max_blocking) = common::runtime::runtime_pool_sizes();
+    tracing::info!(
+        worker_threads = rt_workers,
+        max_blocking_threads = rt_max_blocking,
+        available_parallelism =
+            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        cgroup_cpu_quota = ?common::runtime::cgroup_cpu_quota(),
+        "Tokio runtime pools sized"
     );
 
     // Load configuration from environment variables

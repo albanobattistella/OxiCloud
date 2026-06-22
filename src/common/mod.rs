@@ -3,4 +3,5 @@ pub mod di;
 pub mod errors;
 pub mod locale;
 pub mod mime_detect;
+pub mod runtime;
 pub mod stubs;
