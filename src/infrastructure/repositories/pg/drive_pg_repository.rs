@@ -197,6 +197,32 @@ impl DriveRepository for DrivePgRepository {
         Self::row_to_drive_with_name(&row)
     }
 
+    async fn get_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<DriveWithRootName>, DriveRepositoryError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
+                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.created_at, d.updated_at,
+                   f.name AS root_folder_name
+              FROM storage.drives d
+              JOIN storage.folders f ON f.id = d.root_folder_id
+             WHERE d.id = ANY($1)
+            "#,
+        )
+        .bind(ids)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| Self::map_sqlx_err("get_by_ids", e))?;
+
+        rows.iter().map(Self::row_to_drive_with_name).collect()
+    }
+
     async fn find_default_for_user(
         &self,
         user_id: Uuid,

@@ -1467,8 +1467,14 @@ impl AppServiceFactory {
             path_resolver: None,
             webdav_lock_store:
                 crate::infrastructure::services::webdav_lock_service::create_webdav_lock_store(),
-            authorization,
+            authorization: authorization.clone(),
             drive_repo: drive_repo.clone(),
+            drive_management_service: Arc::new(
+                crate::application::services::drive_management_service::DriveManagementService::new(
+                    drive_repo.clone(),
+                    authorization.clone(),
+                ),
+            ),
             subject_group_service: Some(Arc::new(
                 crate::application::services::subject_group_service::SubjectGroupService::new(
                     subject_group_repo.clone(),
@@ -1935,6 +1941,13 @@ pub struct AppState {
     /// resolved through `role_grants` not a separate `drive_members`
     /// table (see `docs/plan/drive.md` §3).
     pub drive_repo: Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+    /// D2 — drive membership management service. Translates the membership
+    /// API (`POST/PATCH/DELETE /api/drives/{id}/members`) into role-grant
+    /// writes on `resource_type='drive'`, with the personal-drive guard
+    /// and shared-drive last-owner protection layered in.
+    pub drive_management_service: Arc<
+        crate::application::services::drive_management_service::DriveManagementService,
+    >,
     /// ReBAC subject-group management (CRUD + membership). `None` when the
     /// auth subsystem is not configured.
     pub subject_group_service:

@@ -78,6 +78,16 @@ pub trait DriveRepository: Send + Sync + 'static {
     /// when no row matches.
     async fn get_by_id(&self, id: Uuid) -> Result<DriveWithRootName, DriveRepositoryError>;
 
+    /// Batch fetch — returns one row per existing id. Missing ids are
+    /// silently dropped (matches the `get_files_by_ids` / `get_folders_by_ids`
+    /// shape used by `list_shared_with_me`). Caller-side `HashMap<Uuid, _>`
+    /// lookup gives `Option<Drive>` semantics for stale grants whose drive
+    /// was deleted between listing and resolution.
+    async fn get_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<DriveWithRootName>, DriveRepositoryError>;
+
     /// Return the caller's default personal drive paired with its
     /// display name, or `NotFound` if they don't have one (e.g.
     /// external users; users created before the lifecycle hook fired).
