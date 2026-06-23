@@ -269,6 +269,7 @@ pub async fn add_drive_member(
         .drive_management_service
         .set_member_role(
             auth_user.id,
+            false, // caller_is_admin — user-facing route, always require Manage
             drive_id,
             subject,
             dto.role.into(),
@@ -310,6 +311,7 @@ pub async fn update_drive_member(
         .drive_management_service
         .set_member_role(
             auth_user.id,
+            false, // caller_is_admin — user-facing route, always require Manage
             drive_id,
             subject,
             dto.role.into(),
@@ -347,7 +349,7 @@ pub async fn remove_drive_member(
     let subject = parse_subject(kind, subject_id);
     match state
         .drive_management_service
-        .remove_member(auth_user.id, drive_id, subject)
+        .remove_member(auth_user.id, false, drive_id, subject)
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),

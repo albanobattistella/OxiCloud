@@ -164,7 +164,7 @@ pub async fn create_grant(
     let grant = if let Resource::Drive(drive_id) = resource {
         match state
             .drive_management_service
-            .set_member_role(caller_id, drive_id, subject, role, expires_at)
+            .set_member_role(caller_id, false, drive_id, subject, role, expires_at)
             .await
         {
             Ok(g) => g,
@@ -322,7 +322,7 @@ pub async fn revoke_grant(
         }
         if let Err(e) = state
             .drive_management_service
-            .remove_member(caller_id, drive_id, subject)
+            .remove_member(caller_id, false, drive_id, subject)
             .await
         {
             return AppError::from(e).into_response();
@@ -609,7 +609,7 @@ pub async fn set_role(
     let grant = if let Resource::Drive(drive_id) = resource {
         match state
             .drive_management_service
-            .set_member_role(caller_id, drive_id, subject, role, expires_at)
+            .set_member_role(caller_id, false, drive_id, subject, role, expires_at)
             .await
         {
             Ok(g) => g,

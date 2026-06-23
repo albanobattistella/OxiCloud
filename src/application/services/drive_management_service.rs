@@ -173,54 +173,105 @@ impl DriveManagementService {
     ///
     /// `set_role` is idempotent — `(subject, resource)` is unique — so the
     /// two HTTP shapes share one service method. Returns the resulting grant.
+    ///
+    /// `caller_is_admin = true` skips the per-drive `Manage` check
+    /// (used by `/api/admin/drives/{id}/members` so an admin who
+    /// created the drive for someone else can still edit owners).
+    /// Personal-drive guard and last-owner protection still apply —
+    /// admin bypass is about *access*, not invariants. The audit log
+    /// flags admin-driven changes via `via_admin = true` so a reader
+    /// can tell what fired the mutation. The caller (HTTP handler) is
+    /// authoritative for `caller_is_admin`; the route gate is the
+    /// source of truth and the service trusts the flag.
     pub async fn set_member_role(
         &self,
         caller_id: Uuid,
+        caller_is_admin: bool,
         drive_id: Uuid,
         subject: Subject,
         role: Role,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Grant, DomainError> {
         let resource = Resource::Drive(drive_id);
-        self.authz
-            .require(Subject::User(caller_id), Permission::Manage, resource)
-            .await?;
+        if !caller_is_admin {
+            self.authz
+                .require(Subject::User(caller_id), Permission::Manage, resource)
+                .await?;
+        }
 
         self.refuse_if_personal(drive_id, "set_member_role").await?;
 
         // Demotion of the last owner = last-owner protection trips. A fresh
         // owner-role write or any non-owner subject is fine; only the case
         // "this subject is currently the only owner AND the new role is not
-        // owner" is refused.
+        // owner" is refused. Applies to admin-bypass too: orphaning a
+        // shared drive is the same category error regardless of who fires
+        // the request.
         if !matches!(role, Role::Owner) {
             self.refuse_if_last_owner_change(drive_id, subject, caller_id)
                 .await?;
         }
 
-        self.authz
+        let grant = self
+            .authz
             .set_role(caller_id, subject, role, resource, expires_at)
-            .await
+            .await?;
+
+        if caller_is_admin {
+            tracing::info!(
+                target: "audit",
+                event = "drive_membership.set_via_admin",
+                drive_id = %drive_id,
+                subject_type = subject.type_str(),
+                subject_id = %subject.id(),
+                role = role.as_str(),
+                by = %caller_id,
+                "👮🏻‍♂️ admin set drive member role bypassing Manage check",
+            );
+        }
+        Ok(grant)
     }
 
     /// `DELETE /api/drives/{id}/members/{subject_id}`. Idempotent — removing
     /// a subject with no current grant succeeds (matches `clear_role`).
+    ///
+    /// `caller_is_admin` mirrors `set_member_role`: skips the per-drive
+    /// `Manage` check but keeps personal-drive guard + last-owner
+    /// protection. Audit emits `drive_membership.removed_via_admin`
+    /// when the bypass fires.
     pub async fn remove_member(
         &self,
         caller_id: Uuid,
+        caller_is_admin: bool,
         drive_id: Uuid,
         subject: Subject,
     ) -> Result<(), DomainError> {
         let resource = Resource::Drive(drive_id);
-        self.authz
-            .require(Subject::User(caller_id), Permission::Manage, resource)
-            .await?;
+        if !caller_is_admin {
+            self.authz
+                .require(Subject::User(caller_id), Permission::Manage, resource)
+                .await?;
+        }
 
         self.refuse_if_personal(drive_id, "remove_member").await?;
 
         self.refuse_if_last_owner_change(drive_id, subject, caller_id)
             .await?;
 
-        self.authz.clear_role(subject, resource).await
+        self.authz.clear_role(subject, resource).await?;
+
+        if caller_is_admin {
+            tracing::info!(
+                target: "audit",
+                event = "drive_membership.removed_via_admin",
+                drive_id = %drive_id,
+                subject_type = subject.type_str(),
+                subject_id = %subject.id(),
+                by = %caller_id,
+                "👮🏻‍♂️ admin removed drive member bypassing Manage check",
+            );
+        }
+        Ok(())
     }
 
     // ── Business rules ──────────────────────────────────────────────────────

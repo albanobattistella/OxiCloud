@@ -431,4 +431,28 @@ impl DriveRepository for DrivePgRepository {
             .map(Self::row_to_drive_with_name_and_role)
             .collect()
     }
+
+    async fn list_all(&self) -> Result<Vec<DriveWithRootName>, DriveRepositoryError> {
+        // No subject filter: every drive on the system. The HTTP layer
+        // (admin guard on `/api/admin/drives`) is the access control —
+        // adding a role filter here would defeat the point of the
+        // endpoint (an admin without explicit membership wouldn't see
+        // the drives they created for other users).
+        let rows = sqlx::query(
+            r#"
+            SELECT d.id, d.kind, d.default_for_user, d.root_folder_id,
+                   d.quota_bytes, d.used_bytes, d.policies,
+                   d.created_at, d.updated_at,
+                   f.name AS root_folder_name
+              FROM storage.drives d
+              JOIN storage.folders f ON f.id = d.root_folder_id
+             ORDER BY LOWER(f.name) ASC
+            "#,
+        )
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| Self::map_sqlx_err("list_all", e))?;
+
+        rows.iter().map(Self::row_to_drive_with_name).collect()
+    }
 }

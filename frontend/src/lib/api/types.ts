@@ -244,6 +244,19 @@ export interface Drive {
 }
 
 /**
+ * Request body for `POST /api/drives` (D3a). Mirrors `CreateDriveDto` in
+ * `src/interfaces/api/handlers/drive_handler.rs`. `kind: 'personal'` is a
+ * recognised wire shape but returns 501 today (the authz model + quota
+ * source for secondary personals are still open product questions).
+ */
+export interface CreateDriveBody {
+	kind: DriveKind;
+	name: string;
+	owner: DriveMemberSubject;
+	quota_bytes?: number | null;
+}
+
+/**
  * One row from `GET /api/drives/{id}/members`. Mirrors `GrantDto` in
  * `src/application/dtos/grant_dto.rs` — the shape is the same as any
  * other role-grant; drive membership just constrains `resource.type` to

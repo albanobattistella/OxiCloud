@@ -176,6 +176,21 @@ pub trait DriveRepository: Send + Sync + 'static {
         subject_types: &[&str],
         subject_ids: &[Uuid],
     ) -> Result<Vec<DriveWithRootName>, DriveRepositoryError>;
+
+    /// List every drive on the system, regardless of caller membership.
+    ///
+    /// Used by the admin panel's `GET /api/admin/drives`. Distinct from
+    /// `list_for_subjects` (which filters by `role_grants`) because an
+    /// admin who creates a shared drive for someone else has no grant
+    /// on it — but still needs to see, audit, and manage it. The HTTP
+    /// gate (admin-only middleware) is what makes the unrestricted
+    /// listing safe; no role-based filtering happens here.
+    ///
+    /// Returns rows ordered by display name. `caller_role` is left
+    /// unset on the returned `DriveWithRootName` — the admin is not
+    /// necessarily a member, so the per-drive role would be misleading
+    /// here.
+    async fn list_all(&self) -> Result<Vec<DriveWithRootName>, DriveRepositoryError>;
 }
 
 /// Convenience: convert the canonical kind discriminator from its SQL

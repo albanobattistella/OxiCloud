@@ -1,6 +1,6 @@
 /**
- * Drives endpoints. D0 ships read-only listing; D2 adds the membership API.
- * D3 will add the create-shared-drive flow under the same module.
+ * Drives endpoints. D0 ships read-only listing; D2 adds the membership API;
+ * D3a adds the create-shared-drive flow.
  *
  * Consumers usually go through the `drives` store (`$lib/stores/drives.svelte`)
  * which dedupes the request and caches the list — touch this module directly
@@ -8,13 +8,46 @@
  */
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { Drive, DriveMember, DriveMemberSubject, DriveRole } from '$lib/api/types';
+import type {
+	CreateDriveBody,
+	Drive,
+	DriveMember,
+	DriveMemberSubject,
+	DriveRole
+} from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 /** `GET /api/drives` — every drive the caller can read, default first by convention. */
 export function listDrives(): Promise<Drive[]> {
 	return apiJson<Drive[]>('/api/drives', { credentials: 'same-origin' });
+}
+
+/**
+ * `POST /api/drives` — create a drive (D3a). Today only `kind: 'shared'` is
+ * implemented; `kind: 'personal'` is accepted on the wire but returns 501.
+ * Admin-only at the server; callers should already have gated the UI on
+ * `session.user?.role === 'admin'`. Throws on non-2xx with the server's
+ * error body parsed where possible.
+ */
+export async function createDrive(body: CreateDriveBody): Promise<Drive> {
+	const res = await apiFetch('/api/drives', {
+		method: 'POST',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		credentials: 'same-origin',
+		body: JSON.stringify(body)
+	});
+	if (!res.ok) {
+		let detail = '';
+		try {
+			const parsed = (await res.json()) as { error?: string; message?: string };
+			detail = parsed.error ?? parsed.message ?? '';
+		} catch {
+			/* response body wasn't JSON */
+		}
+		throw new Error(detail || `create drive failed: ${res.status}`);
+	}
+	return (await res.json()) as Drive;
 }
 
 /** `GET /api/drives/{id}/members` — every role grant on the drive. */
