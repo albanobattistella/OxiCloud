@@ -95,6 +95,80 @@ done <<< "$OTHER_USER_IDS"
 
 log "Deleted $OTHER_USER_COUNT non-admin user(s) created by tests."
 
+# ── 1d. Drain every non-default drive ─────────────────────────────────────────
+#
+# Hurl tests that create shared drives (or future secondary personal
+# drives) for OTHER users can leave them dangling: file rows in those
+# drives carry `user_id = <root_folder.user_id>` — which is the admin
+# who CREATED the drive, not the uploader — so the legacy
+# `storage.files.user_id` FK CASCADE we leaned on above does NOT reach
+# them when the test user is deleted. The drive + its content stays
+# live → blobs stay referenced → garbage_collect() leaves them on
+# disk → the leftover-detector at the end of this script fails.
+#
+# Strategy: enumerate every drive via the admin-wide listing, grant
+# admin Owner role on each non-default drive (admin-bypass route from
+# D2a), then walk the drive's root via the regular Owner-side
+# endpoints, trash everything, empty per-drive trash, and delete the
+# drive itself. With the drive gone, its blobs lose all references
+# and the force-GC at the end of the script reaps them.
+#
+# Skipped: the admin's OWN default-personal drive — that's drained
+# above by the existing `/api/folders` loop.
+
+ADMIN_DRIVE_IDS=$(curl -sf -H "$AUTH" "$base_url/api/admin/drives" \
+    | jq -r --arg admin_id "$ADMIN_USER_ID" \
+        '.[] | select(.default_for_user != $admin_id) | .id')
+
+DRAINED_DRIVES=0
+while IFS= read -r drive_id; do
+    [[ -z "$drive_id" ]] && continue
+
+    # Drive metadata — we need the root_folder_id to drain its content.
+    DRIVE_META=$(curl -sf -H "$AUTH" "$base_url/api/admin/drives" \
+                    | jq --arg id "$drive_id" '.[] | select(.id == $id)')
+    DRIVE_ROOT=$(echo "$DRIVE_META" | jq -r '.root_folder_id')
+    DRIVE_NAME=$(echo "$DRIVE_META" | jq -r '.name')
+
+    # Grant admin Owner on the drive (admin-bypass — `caller_is_admin =
+    # true` skips the `Manage` precheck so we don't need to already
+    # have a role). Idempotent: if admin is already Owner, the call
+    # refreshes the role.
+    curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
+        -d "{\"subject\":{\"type\":\"user\",\"id\":\"$ADMIN_USER_ID\"},\"role\":\"owner\"}" \
+        "$base_url/api/admin/drives/$drive_id/members" >/dev/null \
+        || fail "could not grant admin Owner on drive $drive_id ($DRIVE_NAME)"
+
+    # Now drain the drive's root through the regular user-facing
+    # endpoints. Admin is Owner → Read passes.
+    CONTENTS=$(curl -sf -H "$AUTH" "$base_url/api/folders/$DRIVE_ROOT/resources?limit=500")
+
+    while IFS= read -r sub_id; do
+        [[ -z "$sub_id" ]] && continue
+        curl -sf -X DELETE -H "$AUTH" "$base_url/api/folders/$sub_id" >/dev/null
+    done < <(echo "$CONTENTS" | jq -r '.items[] | select(.resource_type == "folder") | .resource.id')
+
+    while IFS= read -r file_id; do
+        [[ -z "$file_id" ]] && continue
+        curl -sf -X DELETE -H "$AUTH" "$base_url/api/files/$file_id" >/dev/null
+    done < <(echo "$CONTENTS" | jq -r '.items[] | select(.resource_type == "file") | .resource.id')
+
+    # Empty the drive's per-drive trash so D3b's "drive must be empty"
+    # guard passes on the delete. `/api/trash/drive/{id}` is the
+    # Owner-only per-drive empty (admin is Owner now via the grant
+    # above).
+    curl -sf -X DELETE -H "$AUTH" "$base_url/api/trash/drive/$drive_id" >/dev/null \
+        || fail "could not empty trash on drive $drive_id ($DRIVE_NAME)"
+
+    # Delete the drive itself via the admin-bypass DELETE.
+    curl -sf -X DELETE -H "$AUTH" "$base_url/api/admin/drives/$drive_id" >/dev/null \
+        || fail "could not delete drive $drive_id ($DRIVE_NAME)"
+
+    DRAINED_DRIVES=$((DRAINED_DRIVES + 1))
+done <<< "$ADMIN_DRIVE_IDS"
+
+log "Drained + deleted $DRAINED_DRIVES non-default drive(s)."
+
 # ── 2. Move all live files and folders to trash ───────────────────────────────
 #
 # For each root folder, list its direct children and soft-delete them.

@@ -302,8 +302,7 @@ jsonpath "$.blobs_deleted" exists
 jsonpath "$.bytes_freed" exists
 
 
-# No cleanup — the API test runner (`tests/api/run.sh`) starts each
-# run against a fresh postgres + server, so dangling drives /
-# trashed rows don't leak across runs. Self-contained user/drive
-# names (`dq_*`) also prevent collisions when running alongside the
-# rest of the suite within a single boot.
+# No cleanup tail here — `tests/api/storage_cleanup_check.sh` enumerates
+# every drive via `GET /api/admin/drives` and drains+deletes any that
+# isn't admin's default. This keeps individual Hurl tests focused on
+# their assertions instead of teardown.
