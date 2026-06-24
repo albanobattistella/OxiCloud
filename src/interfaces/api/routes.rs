@@ -469,6 +469,13 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             // when a wildcard like /{id} could otherwise capture them.
             .route("/resources", get(trash_handler::get_trash_resources))
             .route("/empty", delete(trash_handler::empty_trash))
+            // Per-drive empty (D2b stage 4 / per-drive UX). Scoped
+            // empty of one drive's trash; refused 404 when the caller
+            // lacks Delete on the named drive.
+            .route(
+                "/drive/{drive_id}",
+                delete(trash_handler::empty_trash_for_drive),
+            )
             .route("/files/{id}", delete(trash_handler::move_file_to_trash))
             .route("/folders/{id}", delete(trash_handler::move_folder_to_trash))
             .route("/{id}/restore", post(trash_handler::restore_from_trash))
