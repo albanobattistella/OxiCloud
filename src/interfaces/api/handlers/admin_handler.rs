@@ -98,6 +98,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         // Drives — admin-wide view (distinct from `/api/drives` which
         // is filtered to the caller's role grants).
         .route("/drives", get(list_all_drives))
+        .route("/drives/{id}", delete(delete_drive_admin))
         .route(
             "/drives/{id}/members",
             get(list_drive_members_admin).post(add_drive_member_admin),
@@ -1953,6 +1954,43 @@ pub async fn remove_drive_member_admin(
     state
         .drive_management_service
         .remove_member(admin_id, true, drive_id, subject)
+        .await
+        .map_err(AppError::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/admin/drives/{id}` — admin-only drive delete (D3b).
+///
+/// Same shape as the user-facing `DELETE /api/drives/{id}`, but
+/// bypasses the per-drive `Manage` check (the admin guard at the
+/// route edge is the access control). The remaining invariants —
+/// default Personal drive is undeletable, drive must be empty — still
+/// apply: an admin can't accidentally wipe a populated drive or the
+/// default home folder of any user. Audit emits
+/// `drive.deleted_via_admin` on success.
+#[utoipa::path(
+    delete,
+    path = "/api/admin/drives/{id}",
+    params(("id" = Uuid, Path, description = "Drive UUID")),
+    responses(
+        (status = 204, description = "Drive deleted"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 405, description = "Default Personal drive — undeletable"),
+        (status = 409, description = "Drive is not empty"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn delete_drive_admin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(drive_id): axum::extract::Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let (admin_id, _) = admin_guard(&state, &headers).await?;
+    state
+        .drive_management_service
+        .delete_drive(admin_id, true, drive_id)
         .await
         .map_err(AppError::from)?;
     Ok(StatusCode::NO_CONTENT)

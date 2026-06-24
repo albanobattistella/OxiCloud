@@ -426,6 +426,10 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
                 get(drive_handler::list_drives).post(drive_handler::create_drive),
             )
             .route(
+                "/{id}",
+                axum::routing::delete(drive_handler::delete_drive),
+            )
+            .route(
                 "/{id}/members",
                 get(drive_handler::list_drive_members).post(drive_handler::add_drive_member),
             )
