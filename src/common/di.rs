@@ -523,14 +523,21 @@ impl AppServiceFactory {
         >,
     ) -> ApplicationServices {
         // Main services
-        let folder_service = Arc::new(FolderService::new(
-            repos.folder_repository.clone(),
-            authz.clone(),
-            // Same dispatcher TrashService uses, so the cascade hook in
-            // `delete_folder_with_perms` fans out to the same handlers
-            // (thumbnails, metadata, …) as a single-file delete.
-            core.file_lifecycle.clone(),
-        ));
+        let folder_service = Arc::new(
+            FolderService::new(
+                repos.folder_repository.clone(),
+                authz.clone(),
+                // Same dispatcher TrashService uses, so the cascade hook in
+                // `delete_folder_with_perms` fans out to the same handlers
+                // (thumbnails, metadata, …) as a single-file delete.
+                core.file_lifecycle.clone(),
+            )
+            // D5 cross-drive move gate reads policies via the same
+            // drive repo every other policy uses. Wired here so
+            // `move_folder_with_perms` can enforce
+            // `forbid_cross_drive_move` without a separate construction path.
+            .with_drive_repo(drive_repo.clone()),
+        );
 
         // Built before the upload/management services so the plugin lifecycle
         // bridge (which looks file metadata up by id) can be wired into the
@@ -606,7 +613,12 @@ impl AppServiceFactory {
                 Some(core.file_content_cache.clone()),
                 authz.clone(),
             )
-            .with_file_lifecycle_hook(file_lifecycle.clone());
+            .with_file_lifecycle_hook(file_lifecycle.clone())
+            // D5 cross-drive move gate reads policies via the same
+            // drive repo every other policy uses. Wired here so
+            // `move_file_with_perms` can enforce `forbid_cross_drive_move`
+            // without a separate construction path.
+            .with_drive_repo(drive_repo.clone());
             if let Some(hook) = resource_access_hook.clone() {
                 svc = svc.with_resource_access_hook(hook);
             }
@@ -1537,6 +1549,11 @@ impl AppServiceFactory {
                     drive_repo.clone(),
                     authorization.clone(),
                     subject_group_repo.clone(),
+                    Arc::new(
+                        crate::infrastructure::repositories::pg::UserPgRepository::new(
+                            pool.clone(),
+                        ),
+                    ),
                 ),
             ),
             subject_group_service: Some(Arc::new(

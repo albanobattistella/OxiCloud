@@ -247,9 +247,9 @@ impl ShareUseCase for ShareService {
         // disable anonymous-link creation on every resource in their
         // drive without per-resource intervention. Lookup is one JOIN
         // (`get_policies_for_file` / `_for_folder` — single round-trip);
-        // a denial returns `OperationNotSupported` with an audit log
-        // mirroring the per-drive membership refusal shape used in
-        // `drive_management_service::refuse_if_personal`.
+        // the decision + audit + canonical error live on
+        // `DrivePolicies::refuse_public_links` so every public-link entry
+        // point (future NC OCS share, etc.) refuses with the same shape.
         let item_uuid = Uuid::parse_str(&dto.item_id)
             .map_err(|_| ShareServiceError::Validation("Invalid item UUID".to_string()))?;
         let policies = match item_type {
@@ -261,21 +261,15 @@ impl ShareUseCase for ShareService {
             }
         }
         .map_err(|e| ShareServiceError::Repository(e.to_string()))?;
-        if policies.forbid_public_links {
-            tracing::info!(
-                target: "audit",
-                event = "share.rejected",
-                reason = "forbid_public_links",
-                caller_id = %user_id,
-                item_id = %dto.item_id,
-                item_type = %dto.item_type,
-                "👮🏻‍♂️ public-link creation refused: drive policy forbid_public_links",
-            );
-            return Err(DomainError::operation_not_supported(
-                "Share",
-                "This drive does not allow public links.",
-            ));
-        }
+        let item_type_str: &'static str = match item_type {
+            ShareItemType::File => "file",
+            ShareItemType::Folder => "folder",
+        };
+        policies.refuse_public_links(crate::domain::entities::drive::PublicLinkGateContext {
+            caller_id: user_id,
+            item_type: item_type_str,
+            item_id: item_uuid,
+        })?;
 
         let password_hash = match dto.password {
             Some(p) => Some(self.hash_password_async(&p).await?),

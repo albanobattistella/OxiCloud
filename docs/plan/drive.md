@@ -465,7 +465,7 @@ expansion:
 |---|---|
 | `viewer` | `Read` |
 | `editor` | `Read`, `Create`, `Update`, `Comment` |
-| `owner`  | `Read`, `Create`, `Update`, `Comment`, `Delete`, `Share`, *and* drive-level admin (rename, edit policies, manage members) |
+| `owner`  | `Read`, `Create`, `Update`, `Comment`, `Delete`, `Share`, *and* drive-level admin (rename, manage non-Owner members). **Policy mutation and quota mutation are OxiCloud-admin only (§7, §8)** — owners cannot self-grant capacity or relax compliance gates. Owner-role mutations are admin-only when `forbid_owner_role_change` is on (§8). |
 
 ### 5. Permission resolution — additive over `role_grants`
 
@@ -671,21 +671,43 @@ Each drive carries a `policies` JSON object. Five known keys for v1:
     "forbid_sharing":           false,  // disables per-resource grants on this drive
     "forbid_external_sharing":  false,  // blocks grants to is_external=true subjects
     "forbid_public_links":      false,  // blocks token-share (anonymous link) creation
-    "forbid_cross_drive_move":  false   // blocks MOVE when src.drive_id != dst.drive_id
+    "forbid_cross_drive_move":  false,  // blocks MOVE when src.drive_id != dst.drive_id
+    "forbid_owner_role_change": false   // locks the Owner roster against non-admin callers
 }
 ```
+
+#### Mutation: OxiCloud-admin only
+
+`PATCH /api/drives/{id}/policies` is **OxiCloud-admin only** — the
+same carve-out that guards `drives.quota_bytes` and
+`users.storage_quota_bytes` (§7). The original design had policies
+owner-mutable, but that made them **self-policing soft caps**: an
+owner could disable `forbid_external_sharing`, mint the grant, and
+re-enable the policy. The audit log would capture the toggle but
+the policy gave no compliance-grade enforcement.
+
+Restricting mutation to the tenant operator closes that hole. Drive
+owners can still see the current policy values via
+`GET /api/drives` (read-only) but can't flip them; a UI surface that
+submits an admin ticket handles the self-service case for
+single-owner shadow.tech-style deployments.
+
+Anti-enumeration: non-admin callers receive `404` on the PATCH (the
+same response a non-existent drive would carry), never `403`, so a
+probe can't tell the policy state apart from the drive's existence.
 
 Enforcement points (one place per policy — single grep target):
 
 | Policy | Enforcement callsite |
 |---|---|
 | `forbid_sharing` | `grant_handler::create_grant` — checks `resource.drive_id`'s policy before insertion |
-| `forbid_external_sharing` | `magic_link_invite_service::resolve_or_create_recipient` and `grant_handler::create_grant` (when subject is `is_external=true`) |
-| `forbid_public_links` | `share_handler::create_shared_link` |
-| `forbid_cross_drive_move` | `file_handler::move_file` and `folder_handler::move_folder` — refuse when `src.drive_id != dst.drive_id` |
+| `forbid_external_sharing` | `grant_handler::create_grant` (early Email + late User checks for File/Folder) and `DriveManagementService::set_member_role` (Drive resource + the membership endpoints) |
+| `forbid_public_links` | `share_service::create_shared_link` and `grant_handler::create_grant` (when subject is `Token`) |
+| `forbid_cross_drive_move` | `file_management_service::move_file_with_perms` and `folder_service::move_folder_with_perms` — refuse when `src.drive_id != dst.drive_id` |
+| `forbid_owner_role_change` | `DriveManagementService::set_member_role` (refuses Owner-role writes + demotions of current Owners) and `::remove_member` (refuses removals of Owners) — non-admin callers only |
 
-Default to `false` (everything allowed) — opt-in by drive owner via
-the drive settings UI.
+Default to `false` (everything allowed). Admin opts in per drive via
+`PATCH /api/drives/{id}/policies`.
 
 #### Policy semantics — subtleties to remember
 
@@ -698,6 +720,16 @@ the drive settings UI.
   move. It does **not** stop download + re-upload (that's a different
   category of policy — file-egress, future). UI surface should make
   this explicit so users don't read it as data-leak protection.
+- **`forbid_owner_role_change`** locks the Owner roster against
+  non-admin mutation. After admin provisions the drive's owners, no
+  Owner can add a co-owner, be demoted, or be removed by another
+  Owner — only admin can change the roster. Editor / Viewer
+  mutations by remaining owners are unaffected. Personal drives
+  already refuse every member mutation via `refuse_if_personal`, so
+  this policy only adds value on shared drives. Pairs naturally with
+  the admin-only `PATCH /policies` carve-out above: once admin sets
+  the owners + locks the policies, the configuration is genuinely
+  immutable from the owner side.
 
 #### Future policy keys (out of scope for v1 — but the JSONB shape
 accommodates them without schema migration)
@@ -1510,7 +1542,7 @@ us a real rollback window while the new model bakes in production.
 | **D2 — drive membership API + per-drive trash auth** | `POST /api/drives/{id}/members`, `DELETE`, `PUT` for role changes — thin handlers that translate to `role_grants` INSERT/DELETE/UPDATE with `resource_type='drive'`. `Resource::Drive(Uuid)` (added in D-Prep at the enum level) gets its specialised handler surface here. Shared-drive last-owner protection. Group-as-subject support reuses the existing `subject_groups` machinery. **Personal-drive guards** (`add_member`, `remove_member`, `delete_drive` refuse on `kind='personal'` — see §2). **Per-drive trash authorisation** (§12): trash listing filters by drive(s) the caller can read; trash mutations (send/restore/permanent-delete) require `role='owner'` on the drive; `storage.trash_items` VIEW updated to surface `drive_id`; orphan/aborted-upload sweep becomes per-drive. | Medium |
 | **D3 — group-owned shared drives** | "Create shared drive" flow — admin or group owner triggers, drive created with `kind='shared'`, initial owner row is the group. Group-deletion guard refuses if the group is the last owner of any drive. Drive-rename, drive-delete. | Low |
 | **D4 — per-drive quota** | Move storage accounting off `auth.users.storage_used_bytes` onto `storage.drives.used_bytes`. **Re-point the existing per-user incremental CTE** (introduced in v0.7.0 — see `b5b80549`, `d6987329`) at drive rows; don't reinvent the counting logic. Upload paths check `drive.quota_bytes` instead of (or in addition to) the user's quota for the dual-write window. **Per-chunk incremental quota check on the NC chunked path** (see §13): MKCOL refuses when the drive is already over quota; each PUT chunk runs an O(1) `used + session_so_far + chunk_size > quota` test and refuses with 507 within one chunk of wasted upload. Closes a pre-existing wart where NC clients could upload GB before learning they were over quota. Reconciliation job runs once per day to fix drift. | Medium |
-| **D5 — policies** | JSONB policies column + enforcement at the four known callsites. Owner-only UI in drive settings. Ship policies one at a time if you want fine-grained rollout — `forbid_public_links` first (lowest risk), then `forbid_external_sharing`, then `forbid_sharing`, then `forbid_cross_drive_move`. | Low |
+| **D5 — policies** | JSONB policies column + enforcement at the known callsites. **Mutation is OxiCloud-admin only** (the original "owner-mutable" plan made policies self-policing soft caps — see §8). Five policies in v1: `forbid_public_links`, `forbid_external_sharing`, `forbid_sharing`, `forbid_cross_drive_move`, and `forbid_owner_role_change`. Ship one at a time if you want fine-grained rollout in that order. | Low |
 | **D6 — cross-drive move + audit** | Move folder/file between drives (allowed by default; gated by `forbid_cross_drive_move` policy on the source drive). Audit events for every drive lifecycle event (`drive.created`, `drive.member_added`, `drive.member_removed`, `drive.policy_changed`, `drive.deleted`, `resource.moved_between_drives`). | Low |
 | **D7 — back-compat sweep** | Drop `user_id` from `storage.folders` / `storage.files`. Drop dual-write code. Drop or deprecate `auth.users.storage_quota_bytes`. **Provenance columns (`created_by`, `updated_by`) stay** — they were populated from D0 and are now the sole source of authorship signal. | Low — but the point of no return |
 

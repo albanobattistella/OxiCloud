@@ -414,18 +414,29 @@ pub struct UpdateDrivePoliciesDto {
     pub forbid_public_links: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forbid_cross_drive_move: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forbid_owner_role_change: Option<bool>,
 }
 
-/// `PATCH /api/drives/{id}/policies` — Owner-only policy update (D5).
+/// `PATCH /api/drives/{id}/policies` — **OxiCloud-admin only** policy
+/// update (D5).
 ///
-/// Caller must hold `Manage` on the drive (Owner role bundle). Personal
-/// drives are eligible too — a user can disable `forbid_public_links`
-/// on their own Personal drive without the membership API. Partial
-/// merge into the JSONB `policies` column; the post-merge typed view
-/// is returned.
+/// Policies were originally owner-mutable, but that made them
+/// self-policing soft caps — an owner could disable
+/// `forbid_external_sharing`, create the grant, and re-enable. For
+/// compliance-grade enforcement, mutation is restricted to the
+/// tenant operator (admin role), mirroring the same carve-out that
+/// guards `drives.quota_bytes` and `users.storage_quota_bytes` (§7).
 ///
-/// Audit: emits `drive.policy_changed` with every key's post-merge
-/// value (steady-state observability).
+/// Non-admin callers receive `404` (anti-enumeration — same response
+/// as "drive does not exist", so a probe can't tell apart "no such
+/// drive" from "policies are admin-managed").
+///
+/// Partial merge into the JSONB `policies` column; the post-merge
+/// typed view is returned.
+///
+/// Audit: emits `drive.policy_changed` with `by = <admin_user_id>`
+/// and every key's post-merge value (steady-state observability).
 #[utoipa::path(
     patch,
     path = "/api/drives/{id}/policies",
@@ -433,7 +444,7 @@ pub struct UpdateDrivePoliciesDto {
     request_body = UpdateDrivePoliciesDto,
     responses(
         (status = 200, description = "Policies merged"),
-        (status = 404, description = "Drive not found or caller lacks Manage"),
+        (status = 404, description = "Drive not found OR caller is not OxiCloud admin"),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -444,6 +455,20 @@ pub async fn update_drive_policies(
     Path(drive_id): Path<Uuid>,
     axum::Json(dto): axum::Json<UpdateDrivePoliciesDto>,
 ) -> impl IntoResponse {
+    // OxiCloud-admin only. Anti-enumeration: return the same 404 a
+    // non-existent drive would carry, never 403, so the policy
+    // existence isn't probable by error shape.
+    if auth_user.role != "admin" {
+        tracing::info!(
+            target: "audit",
+            event = "drive.policy_change_rejected",
+            reason = "not_admin",
+            caller_id = %auth_user.id,
+            drive_id = %drive_id,
+            "👮🏻‍♂️ policy mutation refused: caller is not OxiCloud admin",
+        );
+        return AppError::not_found(format!("Drive {drive_id} not found")).into_response();
+    }
     // Translate the Option-per-field DTO into a serde_json partial that
     // only carries the supplied keys, so the JSONB merge in
     // `update_policies` skips fields the caller didn't touch. Building a
@@ -463,6 +488,12 @@ pub async fn update_drive_policies(
     if let Some(v) = dto.forbid_cross_drive_move {
         partial_obj.insert("forbid_cross_drive_move".into(), serde_json::Value::Bool(v));
     }
+    if let Some(v) = dto.forbid_owner_role_change {
+        partial_obj.insert(
+            "forbid_owner_role_change".into(),
+            serde_json::Value::Bool(v),
+        );
+    }
     let partial_value = serde_json::Value::Object(partial_obj);
     let partial: crate::domain::entities::drive::DrivePolicies =
         match serde_json::from_value(partial_value) {
@@ -474,7 +505,7 @@ pub async fn update_drive_policies(
 
     match state
         .drive_management_service
-        .update_policies(auth_user.id, false, drive_id, partial)
+        .update_policies(auth_user.id, drive_id, partial)
         .await
     {
         Ok(merged) => (StatusCode::OK, axum::Json(merged)).into_response(),

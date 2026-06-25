@@ -578,6 +578,61 @@ impl DriveRepository for DrivePgRepository {
         ))
     }
 
+    async fn get_drive_id_and_policies_for_file(
+        &self,
+        file_id: Uuid,
+    ) -> Result<(Uuid, crate::domain::entities::drive::DrivePolicies), DriveRepositoryError> {
+        let row: Option<(Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT d.id, d.policies \
+               FROM storage.drives d \
+               JOIN storage.files  f ON f.drive_id = d.id \
+              WHERE f.id = $1",
+        )
+        .bind(file_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| Self::map_sqlx_err("get_drive_id_and_policies_for_file", e))?;
+        let (drive_id, raw) =
+            row.ok_or_else(|| DriveRepositoryError::NotFound(file_id.to_string()))?;
+        Ok((
+            drive_id,
+            crate::domain::entities::drive::DrivePolicies::from_value(&raw),
+        ))
+    }
+
+    async fn get_drive_id_and_policies_for_folder(
+        &self,
+        folder_id: Uuid,
+    ) -> Result<(Uuid, crate::domain::entities::drive::DrivePolicies), DriveRepositoryError> {
+        let row: Option<(Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT d.id, d.policies \
+               FROM storage.drives  d \
+               JOIN storage.folders fo ON fo.drive_id = d.id \
+              WHERE fo.id = $1",
+        )
+        .bind(folder_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| Self::map_sqlx_err("get_drive_id_and_policies_for_folder", e))?;
+        let (drive_id, raw) =
+            row.ok_or_else(|| DriveRepositoryError::NotFound(folder_id.to_string()))?;
+        Ok((
+            drive_id,
+            crate::domain::entities::drive::DrivePolicies::from_value(&raw),
+        ))
+    }
+
+    async fn drive_id_for_folder(&self, folder_id: Uuid) -> Result<Uuid, DriveRepositoryError> {
+        let row: Option<(Uuid,)> =
+            sqlx::query_as("SELECT drive_id FROM storage.folders WHERE id = $1")
+                .bind(folder_id)
+                .fetch_optional(self.pool.as_ref())
+                .await
+                .map_err(|e| Self::map_sqlx_err("drive_id_for_folder", e))?;
+        row.map(|(id,)| id)
+            .ok_or_else(|| DriveRepositoryError::NotFound(folder_id.to_string()))
+    }
+
     async fn update_policies(
         &self,
         drive_id: Uuid,

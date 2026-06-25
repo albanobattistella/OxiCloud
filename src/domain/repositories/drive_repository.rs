@@ -226,6 +226,28 @@ pub trait DriveRepository: Send + Sync + 'static {
         folder_id: Uuid,
     ) -> Result<crate::domain::entities::drive::DrivePolicies, DriveRepositoryError>;
 
+    /// Resolve a file's owning drive id + its drive's policies in one
+    /// round-trip. Used by D5 `forbid_cross_drive_move` enforcement —
+    /// the move-file service needs both pieces (drive id to compare
+    /// against the destination, policies to gate). Returns `NotFound`
+    /// when the file row or its drive_id doesn't resolve.
+    async fn get_drive_id_and_policies_for_file(
+        &self,
+        file_id: Uuid,
+    ) -> Result<(Uuid, crate::domain::entities::drive::DrivePolicies), DriveRepositoryError>;
+
+    /// Same as [`Self::get_drive_id_and_policies_for_file`] for folders.
+    async fn get_drive_id_and_policies_for_folder(
+        &self,
+        folder_id: Uuid,
+    ) -> Result<(Uuid, crate::domain::entities::drive::DrivePolicies), DriveRepositoryError>;
+
+    /// Resolve just the drive id of a folder — fast PK probe used by
+    /// the cross-drive-move gate to identify the move destination
+    /// (where we don't need policies, just the discriminator). Returns
+    /// `NotFound` when the folder row doesn't exist.
+    async fn drive_id_for_folder(&self, folder_id: Uuid) -> Result<Uuid, DriveRepositoryError>;
+
     /// Merge the given partial policy bag into the drive's existing
     /// `policies` JSONB, returning the updated bag. JSONB-level merge
     /// preserves unknown keys already present on disk (the column stays
