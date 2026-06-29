@@ -558,11 +558,13 @@ impl FolderUseCase for FolderService {
             // TODO: full descendant-cycle check (moving a folder into one of its own descendants)
         }
 
-        // D5 `forbid_cross_drive_move`: refuse when src and dst sit in
-        // different drives and the source drive's policy is on.
+        // D5 `forbid_cross_drive_move` + D6 `resource.moved_between_drives`
+        // audit share the same src/dst lookup. Gate before the move,
+        // audit after a successful move when the two drives differ.
         // Skipped for parent_id=None (root namespace, same-drive
         // semantics) and when drive_repo isn't wired (stubs/tests) —
         // same shape as `move_file_with_perms`.
+        let mut cross_drive: Option<(Uuid, Uuid)> = None;
         if let Some(drive_repo) = &self.drive_repo
             && let Some(parent_id) = &dto.parent_id
         {
@@ -592,6 +594,7 @@ impl FolderUseCase for FolderService {
                         dst_drive_id,
                     },
                 )?;
+                cross_drive = Some((src_drive_id, dst_drive_id));
             }
         }
 
@@ -606,6 +609,23 @@ impl FolderUseCase for FolderService {
                     format!("Failed to move folder with ID: {}: {}", id, e),
                 )
             })?;
+
+        // D6 audit: only emit when the move crossed a drive boundary.
+        // The cascade trigger has already propagated drive_id to the
+        // subtree at this point (see migration
+        // `20260807000000_cascade_drive_id_on_folder_move.sql`).
+        if let Some((src_drive_id, dst_drive_id)) = cross_drive {
+            tracing::info!(
+                target: "audit",
+                event = "resource.moved_between_drives",
+                resource_type = "folder",
+                resource_id = %folder.id(),
+                src_drive_id = %src_drive_id,
+                dst_drive_id = %dst_drive_id,
+                by = %caller_id,
+                "📦 folder moved between drives",
+            );
+        }
 
         Ok(FolderDto::from(folder))
     }

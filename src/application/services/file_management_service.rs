@@ -302,13 +302,13 @@ impl FileManagementUseCase for FileManagementService {
         self.require_target_folder_perm(folder_id.as_deref(), Permission::Create, caller_id)
             .await?;
 
-        // D5 `forbid_cross_drive_move`: refuse when the destination
-        // folder belongs to a different drive than the source file and
-        // the source drive's policy is on. Silently skipped if the
-        // drive repo isn't wired (stub builders) or the move target is
-        // None (root namespace — same-drive semantics). Source policy
-        // is canonical per §8: the drive that owns the content
-        // controls outbound moves.
+        // D5 `forbid_cross_drive_move` + D6 `resource.moved_between_drives` audit
+        // share the same src/dst drive_id lookup: the gate refuses
+        // before the move; the audit fires after a successful move
+        // when the two drives differ. Silently skipped if the drive
+        // repo isn't wired (stub builders) or the move target is None
+        // (root namespace — same-drive semantics).
+        let mut cross_drive: Option<(Uuid, Uuid)> = None;
         if let Some(drive_repo) = &self.drive_repo
             && let Some(target_folder_id) = folder_id.as_deref()
         {
@@ -338,10 +338,29 @@ impl FileManagementUseCase for FileManagementService {
                         dst_drive_id,
                     },
                 )?;
+                cross_drive = Some((src_drive_id, dst_drive_id));
             }
         }
 
-        self.move_file(file_id, folder_id, caller_id).await
+        let dto = self.move_file(file_id, folder_id, caller_id).await?;
+
+        // D6 §11 audit: emit only when the move actually crossed a
+        // drive boundary. Same-drive moves are too noisy to audit at
+        // info — operators care about the cross-drive case for
+        // exfiltration / quota tracking.
+        if let Some((src_drive_id, dst_drive_id)) = cross_drive {
+            tracing::info!(
+                target: "audit",
+                event = "resource.moved_between_drives",
+                resource_type = "file",
+                resource_id = %dto.id,
+                src_drive_id = %src_drive_id,
+                dst_drive_id = %dst_drive_id,
+                by = %caller_id,
+                "📦 file moved between drives",
+            );
+        }
+        Ok(dto)
     }
 
     async fn copy_file_with_perms(

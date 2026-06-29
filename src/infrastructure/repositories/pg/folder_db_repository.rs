@@ -657,17 +657,32 @@ impl FolderRepository for FolderDbRepository {
         // Retried on deadlock vs the tree-ETag flusher (see rename_folder).
         //
         // §14: `updated_by = $3` (caller_id), see rename_folder.
+        //
+        // D6: also sync `drive_id` from the destination parent on
+        // cross-drive moves. The CTE-derived `dest.drive_id` is
+        // assigned via COALESCE so a root-level move (no destination —
+        // `new_parent_id = NULL`) keeps the existing drive_id, mirroring
+        // the file move path. The cascade trigger
+        // (`cascade_folder_path`) then propagates the new drive_id to
+        // every descendant folder + file in the subtree — see
+        // `migrations/20260807000000_cascade_drive_id_on_folder_move.sql`.
         let row = retry_on_deadlock("folders.move", || {
             sqlx::query_as::<_, FolderRow>(
                 r#"
-                UPDATE storage.folders
-                   SET parent_id = $1::uuid, updated_at = NOW(), updated_by = $3
-                 WHERE id = $2::uuid AND NOT is_trashed
-                RETURNING id::text, name, path, parent_id::text, user_id, drive_id,
-                          EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM updated_at)::bigint,
-                           EXTRACT(EPOCH FROM tree_modified_at)::bigint,
-                             created_by, updated_by
+                WITH dest AS (
+                    SELECT drive_id FROM storage.folders WHERE id = $1::uuid
+                )
+                UPDATE storage.folders f
+                   SET parent_id  = $1::uuid,
+                       drive_id   = COALESCE((SELECT drive_id FROM dest), f.drive_id),
+                       updated_at = NOW(),
+                       updated_by = $3
+                 WHERE f.id = $2::uuid AND NOT f.is_trashed
+                RETURNING f.id::text, f.name, f.path, f.parent_id::text, f.user_id, f.drive_id,
+                          EXTRACT(EPOCH FROM f.created_at)::bigint,
+                          EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                          EXTRACT(EPOCH FROM f.tree_modified_at)::bigint,
+                          f.created_by, f.updated_by
                 "#,
             )
             .bind(new_parent_id)
@@ -1420,6 +1435,7 @@ impl FolderDbRepository {
                 f.created_at,
                 f.updated_at              AS modified_at,
                 f.user_id,
+                f.drive_id,
                 NULL::text                AS blob_hash,
                 LOWER(f.name)             AS sort_str,
                 0::bigint                 AS type_order,
@@ -1439,6 +1455,7 @@ impl FolderDbRepository {
                 fm.created_at,
                 fm.updated_at             AS modified_at,
                 fm.user_id,
+                fm.drive_id,
                 fm.blob_hash,
                 LOWER(fm.name)            AS sort_str,
                 fm.category_order::bigint AS type_order,
@@ -1563,7 +1580,8 @@ impl FolderDbRepository {
         let sql = format!(
             "WITH resources AS ({cte_inner}) \
              SELECT resource_type, id, name, folder_id, mime_type, size, \
-                    created_at, modified_at, user_id, blob_hash, sort_str, type_order, folder_first \
+                    created_at, modified_at, user_id, drive_id, blob_hash, \
+                    sort_str, type_order, folder_first \
              FROM resources \
              {where_clause} \
              {order_clause} \
@@ -1571,7 +1589,7 @@ impl FolderDbRepository {
         );
 
         // Row: (resource_type, id, name, folder_id, mime_type, size,
-        //        created_at, modified_at, user_id, blob_hash,
+        //        created_at, modified_at, user_id, drive_id, blob_hash,
         //        sort_str, type_order, folder_first)
         type Row = (
             String,
@@ -1582,6 +1600,7 @@ impl FolderDbRepository {
             i64,
             chrono::DateTime<chrono::Utc>,
             chrono::DateTime<chrono::Utc>,
+            Uuid,
             Uuid,
             Option<String>,
             String,
@@ -1614,10 +1633,11 @@ impl FolderDbRepository {
                 created_at: r.6,
                 modified_at: r.7,
                 owner_id: r.8,
-                blob_hash: r.9,
-                sort_str: r.10,
-                type_order: r.11,
-                folder_first: r.12,
+                drive_id: r.9,
+                blob_hash: r.10,
+                sort_str: r.11,
+                type_order: r.12,
+                folder_first: r.13,
             })
             .collect())
     }
