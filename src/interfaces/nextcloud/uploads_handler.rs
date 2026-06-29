@@ -4,14 +4,89 @@ use axum::{
     response::Response,
 };
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::application::ports::file_ports::{FileRetrievalUseCase, FileUploadUseCase};
+use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::common::di::AppState;
 use crate::common::mime_detect::filename_from_path;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::upload_ingest::{
     discard_ingested, ingest_stream_to_cas, stream_body_to_path, stream_from_files,
 };
+
+/// Per-chunk quota gate (D4 / project_drive_quota_timing).
+///
+/// Pre-D4 the NC chunked path never declared a total size up front, so
+/// quota only fired at the final MOVE — meaning a client could waste GB
+/// of upload bandwidth before learning it was over. The drive is known
+/// from the session's chroot and the user is on the session, so we can
+/// gate at every wire moment now:
+///
+///   - MKCOL: refuse if either the drive or the user envelope is
+///     already at quota (call with `additional = 0`).
+///   - PUT  : refuse if `used + already_uploaded_for_session +
+///     content-length` would breach either cap.
+///     `already_uploaded_for_session` is the sum of chunk sizes the
+///     session already holds on disk.
+///   - MOVE : defence in depth via `file_upload_service`'s own gates.
+///
+/// Both checks run because the two caps cover different cases:
+/// `check_drive_quota` is the per-drive `drives.quota_bytes` cap
+/// (shared drives carry a value; personal drives are `NULL` and
+/// short-circuit to OK). `check_storage_quota` is the user envelope
+/// `users.storage_quota_bytes` that caps the SUM across the caller's
+/// personal drives (shared-drive uploads short-circuit because the
+/// envelope only sums personal drives — see
+/// `project_user_envelope_quota_model`). Mirrors what every other
+/// upload entry point (multipart, native chunked, delta, instant)
+/// already does.
+async fn refuse_if_over_quota(
+    state: &AppState,
+    user_id: Uuid,
+    drive_id: Uuid,
+    additional: u64,
+) -> Result<(), AppError> {
+    let Some(svc) = state.storage_usage_service.as_ref() else {
+        // Quota tracking disabled in this config; MOVE-time gate
+        // remains authoritative.
+        return Ok(());
+    };
+    svc.check_storage_quota(user_id, additional)
+        .await
+        .map_err(AppError::from)?;
+    svc.check_drive_quota(drive_id, additional)
+        .await
+        .map_err(AppError::from)
+}
+
+/// Sum of bytes already accepted into a chunked-upload session.
+///
+/// Reads the session directory once via `list_chunks` and totals every
+/// chunk's on-disk size. O(N) stat calls per check, but N is the chunk
+/// count (NC clients use 10 MB chunks by default — a 10 GB upload sits
+/// around 1000 entries; PUT throughput dominates the cost). A
+/// per-session counter file would amortise it to O(1) but adds a
+/// separate write-and-sync path with its own crash semantics — defer
+/// until profiling actually demands it.
+async fn session_bytes_so_far(
+    nc: &crate::common::di::NextcloudServices,
+    username: &str,
+    upload_id: &str,
+) -> Result<u64, AppError> {
+    let listing = nc
+        .chunked_uploads
+        .list_chunks(username, upload_id)
+        .await
+        .map_err(|e| AppError::internal_error(format!("Failed to list chunks: {}", e)))?;
+    let Some(listing) = listing else {
+        // Missing session — handler maps this elsewhere; treat as zero
+        // here so the gate doesn't fire spuriously on the very first
+        // chunk after MKCOL (race-tolerant).
+        return Ok(0);
+    };
+    Ok(listing.chunks.iter().map(|c| c.size).sum())
+}
 
 /// Dispatch Nextcloud chunked upload WebDAV requests.
 ///
@@ -145,6 +220,13 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// MKCOL — create upload session directory.
+///
+/// Quota gate (D4): refuse 507 if the bound drive is already at quota,
+/// before allocating the session directory. The chunked path doesn't
+/// declare a total size up front — `additional = 0` so the gate only
+/// fires when the drive is already exactly full (or beyond, after a
+/// burst of concurrent writes). Subsequent PUTs run the proper
+/// "used + session_so_far + chunk" projection.
 async fn handle_mkcol(
     state: Arc<AppState>,
     session: &crate::interfaces::nextcloud::session::NcSession,
@@ -155,6 +237,9 @@ async fn handle_mkcol(
         .nextcloud
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Nextcloud services unavailable"))?;
+
+    let chroot = session.require_chroot()?;
+    refuse_if_over_quota(&state, user.id, chroot.drive_id, 0).await?;
 
     nc.chunked_uploads
         .create_session(&user.username, upload_id)
@@ -192,6 +277,22 @@ async fn handle_put_chunk(
     let chunk_name = chunk_name.trim_matches('/');
     if chunk_name.is_empty() {
         return Err(AppError::bad_request("Missing chunk name"));
+    }
+
+    // Per-chunk quota gate (D4): refuse 507 BEFORE accepting body
+    // bytes when `drive.used_bytes + session_so_far + chunk_size`
+    // would cross the drive cap. Closes the wasted-bandwidth wart
+    // where over-quota clients only learned at MOVE.
+    //
+    // Without a Content-Length we can't project ahead — fall back to
+    // the assemble-time check. NC desktop / Android / iOS clients
+    // always send CL on PUT chunks (they read the chunk file into a
+    // length-known body), so this branch is rare in practice.
+    let chroot = session.require_chroot()?;
+    if let Some(chunk_size) = content_length_from(&req) {
+        let so_far = session_bytes_so_far(nc, &user.username, upload_id).await?;
+        let projected = so_far.saturating_add(chunk_size);
+        refuse_if_over_quota(&state, user.id, chroot.drive_id, projected).await?;
     }
 
     let chunk_path = nc
@@ -382,6 +483,17 @@ async fn handle_abort(
         .status(StatusCode::NO_CONTENT)
         .body(Body::empty())
         .unwrap())
+}
+
+/// Read `Content-Length` off a request as a `u64`. Returns `None` if
+/// the header is absent or malformed — the PUT-chunk quota gate
+/// (`handle_put_chunk`) treats that as "skip the early gate, the
+/// stream cap + MOVE-time check will still catch over-quota writes".
+fn content_length_from(req: &Request<Body>) -> Option<u64> {
+    req.headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 /// Extract the file subpath from a Destination header pointing to the files DAV namespace.
