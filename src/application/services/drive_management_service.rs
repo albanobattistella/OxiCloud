@@ -249,18 +249,25 @@ impl DriveManagementService {
             .set_role(caller_id, subject, role, resource, expires_at)
             .await?;
 
-        if caller_is_admin {
-            tracing::info!(
-                target: "audit",
-                event = "drive_membership.set_via_admin",
-                drive_id = %drive_id,
-                subject_type = subject.type_str(),
-                subject_id = %subject.id(),
-                role = role.as_str(),
-                by = %caller_id,
-                "👮🏻‍♂️ admin set drive member role bypassing Manage check",
-            );
-        }
+        // D6 §11: canonical `drive.member_added` audit event covers
+        // every successful membership write (add + role-refresh, since
+        // the underlying `set_role` is UPSERT — distinguishing the two
+        // would require an additional read and bring no extra ops
+        // value). `via_admin` carries the bypass signal that used to
+        // live in a separate `drive_membership.set_via_admin` event;
+        // log aggregators now have one canonical name per operation.
+        tracing::info!(
+            target: "audit",
+            event = "drive.member_added",
+            drive_id = %drive_id,
+            subject_type = subject.type_str(),
+            subject_id = %subject.id(),
+            role = role.as_str(),
+            via_admin = caller_is_admin,
+            by = %caller_id,
+            expires_at = ?expires_at,
+            "🤝 drive member added",
+        );
         Ok(grant)
     }
 
@@ -305,17 +312,21 @@ impl DriveManagementService {
 
         self.authz.clear_role(subject, resource).await?;
 
-        if caller_is_admin {
-            tracing::info!(
-                target: "audit",
-                event = "drive_membership.removed_via_admin",
-                drive_id = %drive_id,
-                subject_type = subject.type_str(),
-                subject_id = %subject.id(),
-                by = %caller_id,
-                "👮🏻‍♂️ admin removed drive member bypassing Manage check",
-            );
-        }
+        // D6 §11: canonical `drive.member_removed` audit event covers
+        // every successful removal (owner-driven or admin bypass).
+        // `via_admin` replaces the separate
+        // `drive_membership.removed_via_admin` event — single name,
+        // one boolean field for the bypass signal.
+        tracing::info!(
+            target: "audit",
+            event = "drive.member_removed",
+            drive_id = %drive_id,
+            subject_type = subject.type_str(),
+            subject_id = %subject.id(),
+            via_admin = caller_is_admin,
+            by = %caller_id,
+            "👋 drive member removed",
+        );
         Ok(())
     }
 

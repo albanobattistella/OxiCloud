@@ -657,17 +657,32 @@ impl FolderRepository for FolderDbRepository {
         // Retried on deadlock vs the tree-ETag flusher (see rename_folder).
         //
         // §14: `updated_by = $3` (caller_id), see rename_folder.
+        //
+        // D6: also sync `drive_id` from the destination parent on
+        // cross-drive moves. The CTE-derived `dest.drive_id` is
+        // assigned via COALESCE so a root-level move (no destination —
+        // `new_parent_id = NULL`) keeps the existing drive_id, mirroring
+        // the file move path. The cascade trigger
+        // (`cascade_folder_path`) then propagates the new drive_id to
+        // every descendant folder + file in the subtree — see
+        // `migrations/20260807000000_cascade_drive_id_on_folder_move.sql`.
         let row = retry_on_deadlock("folders.move", || {
             sqlx::query_as::<_, FolderRow>(
                 r#"
-                UPDATE storage.folders
-                   SET parent_id = $1::uuid, updated_at = NOW(), updated_by = $3
-                 WHERE id = $2::uuid AND NOT is_trashed
-                RETURNING id::text, name, path, parent_id::text, user_id, drive_id,
-                          EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM updated_at)::bigint,
-                           EXTRACT(EPOCH FROM tree_modified_at)::bigint,
-                             created_by, updated_by
+                WITH dest AS (
+                    SELECT drive_id FROM storage.folders WHERE id = $1::uuid
+                )
+                UPDATE storage.folders f
+                   SET parent_id  = $1::uuid,
+                       drive_id   = COALESCE((SELECT drive_id FROM dest), f.drive_id),
+                       updated_at = NOW(),
+                       updated_by = $3
+                 WHERE f.id = $2::uuid AND NOT f.is_trashed
+                RETURNING f.id::text, f.name, f.path, f.parent_id::text, f.user_id, f.drive_id,
+                          EXTRACT(EPOCH FROM f.created_at)::bigint,
+                          EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                          EXTRACT(EPOCH FROM f.tree_modified_at)::bigint,
+                          f.created_by, f.updated_by
                 "#,
             )
             .bind(new_parent_id)
