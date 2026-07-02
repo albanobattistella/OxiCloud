@@ -35,6 +35,8 @@ function photo(id: string) {
 		modified_at: 0,
 		name: id + '.jpg',
 		owner_id: 'me',
+		created_by: 'me',
+		updated_by: 'me',
 		folder_id: 'home',
 		path: '/' + id + '.jpg',
 		size: 100,

@@ -58,6 +58,8 @@ function folder(id: string, name: string) {
 		modified_at: 0,
 		name,
 		owner_id: 'me',
+		created_by: 'me',
+		updated_by: 'me',
 		parent_id: 'home',
 		path: '/' + name,
 		etag: 'e'

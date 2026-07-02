@@ -40,7 +40,11 @@
 	const entries = $derived(
 		raw.map((it): ResourceEntry => {
 			const isFile = it.resource_type === 'file';
-			const ownerId = it.resource.owner_id ?? null;
+			// §14 provenance — prefer `created_by` (who put the item
+			// into the system) over the deprecated `owner_id`. Fall
+			// back to `owner_id` for pre-D7 rows whose `created_by`
+			// column wasn't backfilled.
+			const ownerId = it.resource.created_by ?? it.resource.owner_id ?? null;
 			return {
 				id: it.resource.id,
 				name: it.resource.name,
@@ -106,7 +110,7 @@
 			});
 			raw = reset ? page.items : [...raw, ...page.items];
 			cursor = page.next_cursor;
-			void owners.resolve(page.items.map((i) => i.resource.owner_id));
+			void owners.resolve(page.items.map((i) => i.resource.created_by ?? i.resource.owner_id));
 		} catch (e) {
 			console.error('favorites: load error', e);
 			error = t('errors_loadFailed', 'Failed to load items');

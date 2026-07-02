@@ -21,6 +21,8 @@ function item(id: string) {
 		category: 'Image',
 		folder_id: '',
 		owner_id: '',
+		created_by: null,
+		updated_by: null,
 		path: '',
 		size: 1,
 		modified_at: 0,

@@ -42,6 +42,8 @@ function withOneFile() {
 					modified_at: 0,
 					name: 'photo.png',
 					owner_id: 'me',
+					created_by: 'me',
+					updated_by: 'me',
 					folder_id: 'root',
 					path: '/photo.png',
 					size: 10,

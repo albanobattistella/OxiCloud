@@ -91,6 +91,8 @@ function fileItem(id: string, name: string) {
 		modified_at: 0,
 		name,
 		owner_id: 'me',
+		created_by: 'me',
+		updated_by: 'me',
 		folder_id: 'home',
 		path: '/' + name,
 		size: 4,
@@ -111,6 +113,8 @@ function folderItem(id: string, name: string) {
 		modified_at: 0,
 		name,
 		owner_id: 'me',
+		created_by: 'me',
+		updated_by: 'me',
 		parent_id: 'home',
 		path: '/' + name,
 		etag: 'e'

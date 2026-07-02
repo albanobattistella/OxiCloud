@@ -29,7 +29,22 @@ export interface FolderItem {
 	// hierarchy fields (including owner_id) for non-owner callers.
 	// Backend serialises `Option<String>` (folder_dto.rs:53); this
 	// type just tells the truth about the wire.
+	//
+	// Deprecated post-D7 (frontend cutover): callers should prefer
+	// `created_by` / `updated_by` instead — they carry §14 provenance
+	// and survive the drop of `storage.folders.user_id`. The
+	// `owner_id` field will be removed from the wire once every
+	// callsite has moved.
 	owner_id: string | null;
+	// §14 provenance — who originally created the folder. `null` when
+	// the creating user has since been deleted (backend FK is
+	// `ON DELETE SET NULL`). Preferred over `owner_id` on the Files
+	// browser owner column and the Favorites / Shared surfaces.
+	created_by: string | null;
+	// §14 provenance — who last touched the folder (rename / move /
+	// metadata change). Preferred over `owner_id` on the Recent
+	// surface, where "who touched this recently" is the intent.
+	updated_by: string | null;
 	parent_id: string | null;
 	path: string;
 	etag: string;
@@ -46,7 +61,13 @@ export interface FileItem {
 	name: string;
 	// `null` on share-recipient responses (same as FolderItem above).
 	// Backend serialises `Option<String>` at file_dto.rs:59.
+	//
+	// Deprecated post-D7 (frontend cutover): prefer `created_by` /
+	// `updated_by` as documented on `FolderItem`.
 	owner_id: string | null;
+	// §14 provenance — see FolderItem for semantics.
+	created_by: string | null;
+	updated_by: string | null;
 	folder_id: string;
 	path: string;
 	size: number;
