@@ -608,17 +608,26 @@ impl DedupService {
     }
 
     /// Of `hashes` (distinct), the subset `caller_id` may claim without
-    /// uploading bytes: chunks referenced by manifests of the caller's
-    /// files (live or trashed), or directly referenced as (legacy)
-    /// whole-file blobs. Backed by the GIN index on
+    /// uploading bytes: chunks referenced by manifests of files in drives
+    /// where the caller holds a **writable role** (owner / editor /
+    /// contributor), or directly referenced as (legacy) whole-file blobs
+    /// under the same predicate. Backed by the GIN index on
     /// `chunk_manifests.chunk_hashes`.
     ///
+    /// Post-D7 (`project_d7_policy_calls` LOCKED design): entitlement is
+    /// drive-membership + writable-role, not the legacy `user_id`
+    /// filter. Viewers/commenters are excluded — they can't legitimately
+    /// upload content into a drive, so they can't claim
+    /// "already-uploaded" via dedup. Group memberships (direct +
+    /// transitive) are expanded inline through
+    /// `storage.caller_group_ids($2)`.
+    ///
     /// Trashed files count as ownership: a trashed file's content is still
-    /// the caller's (restorable until trash-empty), so a re-upload of the
-    /// same content should hit the dedup fast path instead of forcing the
-    /// caller to re-send bytes they already have on the server. Must stay
-    /// in lockstep with [`pin_claimable_chunks`], which actually bumps the
-    /// ref_count using the same entitlement set.
+    /// under the caller's writable scope (restorable until trash-empty),
+    /// so a re-upload of the same content should hit the dedup fast path
+    /// instead of forcing the caller to re-send bytes they already have
+    /// on the server. Must stay in lockstep with [`pin_claimable_chunks`],
+    /// which actually bumps the ref_count using the same entitlement set.
     pub async fn claimable_chunks(
         &self,
         caller_id: uuid::Uuid,
@@ -633,13 +642,35 @@ impl DedupService {
                         SELECT 1
                           FROM storage.files f
                           JOIN storage.chunk_manifests m ON m.file_hash = f.blob_hash
-                         WHERE f.user_id = $2
-                           AND m.chunk_hashes @> ARRAY[c.h]
+                         WHERE m.chunk_hashes @> ARRAY[c.h]
+                           AND EXISTS (
+                                 SELECT 1 FROM storage.role_grants g
+                                  WHERE g.resource_type = 'drive'
+                                    AND g.resource_id   = f.drive_id
+                                    AND g.role IN ('owner', 'editor', 'contributor')
+                                    AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                    AND (
+                                          (g.subject_type = 'user'  AND g.subject_id = $2)
+                                       OR (g.subject_type = 'group' AND g.subject_id IN
+                                               (SELECT storage.caller_group_ids($2)))
+                                        )
+                               )
                     )
                  OR EXISTS (
                         SELECT 1 FROM storage.files f2
-                         WHERE f2.user_id = $2
-                           AND f2.blob_hash = c.h
+                         WHERE f2.blob_hash = c.h
+                           AND EXISTS (
+                                 SELECT 1 FROM storage.role_grants g
+                                  WHERE g.resource_type = 'drive'
+                                    AND g.resource_id   = f2.drive_id
+                                    AND g.role IN ('owner', 'editor', 'contributor')
+                                    AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                    AND (
+                                          (g.subject_type = 'user'  AND g.subject_id = $2)
+                                       OR (g.subject_type = 'group' AND g.subject_id IN
+                                               (SELECT storage.caller_group_ids($2)))
+                                        )
+                               )
                     )",
         )
         .bind(hashes)
@@ -651,17 +682,23 @@ impl DedupService {
     }
 
     /// Pin one reference on each of `hashes` (distinct) that the caller is
-    /// entitled to claim — owned chunks (see [`claimable_chunks`]) or
-    /// unreferenced orphans (`ref_count = 0`, the just-uploaded state).
+    /// entitled to claim — writably-scoped chunks (see [`claimable_chunks`])
+    /// or unreferenced orphans (`ref_count = 0`, the just-uploaded state).
     /// One statement: entitlement check and bump are atomic per row, so a
     /// concurrent last-reference delete can never be resurrected and a
     /// non-entitled hash is simply not returned.
     ///
-    /// Entitlement includes files in trash: a trashed file is still owned
-    /// by the user, the content is still theirs to re-reference, and the
-    /// race with trash-empty is handled the same way as `add_reference` —
-    /// if GC has already deleted the blob row, the UPDATE affects 0 rows
-    /// and the hash is simply absent from the returned set.
+    /// Post-D7 (`project_d7_policy_calls` LOCKED): entitlement uses the
+    /// same drive-membership + writable-role predicate as
+    /// [`claimable_chunks`] — MUST STAY IN LOCKSTEP with that query.
+    /// Group memberships resolve through `storage.caller_group_ids($2)`.
+    ///
+    /// Entitlement includes files in trash: a trashed file is still
+    /// within the caller's writable scope, the content is still theirs
+    /// to re-reference, and the race with trash-empty is handled the
+    /// same way as `add_reference` — if GC has already deleted the blob
+    /// row, the UPDATE affects 0 rows and the hash is simply absent from
+    /// the returned set.
     ///
     /// Returns the set actually pinned; the caller compares against its
     /// input and reports the difference as `still_missing`.
@@ -682,13 +719,35 @@ impl DedupService {
                              SELECT 1
                                FROM storage.files f
                                JOIN storage.chunk_manifests m ON m.file_hash = f.blob_hash
-                              WHERE f.user_id = $2
-                                AND m.chunk_hashes @> ARRAY[b.hash::text]
+                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
+                                AND EXISTS (
+                                      SELECT 1 FROM storage.role_grants g
+                                       WHERE g.resource_type = 'drive'
+                                         AND g.resource_id   = f.drive_id
+                                         AND g.role IN ('owner', 'editor', 'contributor')
+                                         AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                         AND (
+                                               (g.subject_type = 'user'  AND g.subject_id = $2)
+                                            OR (g.subject_type = 'group' AND g.subject_id IN
+                                                    (SELECT storage.caller_group_ids($2)))
+                                             )
+                                    )
                          )
                       OR EXISTS (
                              SELECT 1 FROM storage.files f2
-                              WHERE f2.user_id = $2
-                                AND f2.blob_hash = b.hash
+                              WHERE f2.blob_hash = b.hash
+                                AND EXISTS (
+                                      SELECT 1 FROM storage.role_grants g
+                                       WHERE g.resource_type = 'drive'
+                                         AND g.resource_id   = f2.drive_id
+                                         AND g.role IN ('owner', 'editor', 'contributor')
+                                         AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                         AND (
+                                               (g.subject_type = 'user'  AND g.subject_id = $2)
+                                            OR (g.subject_type = 'group' AND g.subject_id IN
+                                                    (SELECT storage.caller_group_ids($2)))
+                                             )
+                                    )
                          ) )
               RETURNING b.hash",
         )
