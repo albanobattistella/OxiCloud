@@ -783,9 +783,12 @@ async fn handle_proppatch(
         .get("If")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    if let Some(resp) =
-        enforce_native_lock(&state.webdav_lock_store, if_header_owned.as_deref(), &path)
-    {
+    if let Some(resp) = enforce_native_lock(
+        &state.webdav_lock_store,
+        if_header_owned.as_deref(),
+        &path,
+        None,
+    ) {
         return Ok(resp);
     }
 
@@ -1246,49 +1249,212 @@ async fn streamed_file_dead_props(
         .unwrap_or_default()
 }
 
-/// Extract every `<...>` token from a WebDAV `If:` header value.
-///
-/// RFC 4918 §10.4 defines a richer grammar (tagged-list / no-tag-list of
-/// `(Condition)` items), but for our purposes the only thing that matters
-/// is what lock tokens the caller is claiming to hold. Forgivingly scoop
-/// every angle-bracketed value and let the caller compare against the
-/// active lock token(s).
-fn extract_if_header_tokens(if_header: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut inside = false;
-    for c in if_header.chars() {
-        match (inside, c) {
-            (false, '<') => {
-                inside = true;
-                current.clear();
-            }
-            (true, '>') => {
-                inside = false;
-                if !current.is_empty() {
-                    out.push(std::mem::take(&mut current));
-                }
-            }
-            (true, c) => current.push(c),
-            _ => {}
-        }
-    }
-    out
+/// A single condition inside a `List` of the WebDAV `If:` header
+/// (RFC 4918 §10.4.2 grammar):
+/// `Condition = ["Not"] (State-token | "[" entity-tag "]")`.
+#[derive(Debug, Clone, PartialEq)]
+enum IfCondition {
+    StateToken { negated: bool, token: String },
+    EntityTag { negated: bool, etag: String },
 }
 
-/// RFC 4918 §9.10.4 — if `path` is locked, every mutating request MUST
-/// carry the lock's token in its `If:` header. Returns `Some(Response)`
-/// with a 423 Locked response when the request must be rejected; `None`
-/// when the path is unlocked or the caller's `If:` header carries the
-/// matching token (the cheap-and-cheerful submission check).
+/// A parsed `If:` header — outer Vec is OR of `List`s, inner Vec is AND
+/// of `Condition`s (RFC 4918 §10.4.2). Tagged-list `Resource` URIs are
+/// accepted by the parser but their scoping is ignored — every List is
+/// treated as applying to the current request URI. That's a
+/// simplification adequate for litmus and NC clients; a real Tagged-list
+/// implementation would map each List to its preceding Resource.
+type IfLists = Vec<Vec<IfCondition>>;
+
+/// Best-effort parser for RFC 4918 §10.4.2 `If:` headers. Malformed
+/// input yields whatever Lists could be recovered; downstream evaluation
+/// treats an empty result as "no header".
+fn parse_if_header(header: &str) -> IfLists {
+    let mut lists: IfLists = Vec::new();
+    let bytes = header.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+
+    while i < n {
+        match bytes[i] {
+            b' ' | b'\t' | b'\r' | b'\n' => i += 1,
+            b'<' => {
+                // Tagged-list Resource prefix — skip past the closing '>'.
+                i += 1;
+                while i < n && bytes[i] != b'>' {
+                    i += 1;
+                }
+                if i < n {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                i += 1;
+                let mut list: Vec<IfCondition> = Vec::new();
+                loop {
+                    while i < n && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+                        i += 1;
+                    }
+                    if i >= n {
+                        break;
+                    }
+                    if bytes[i] == b')' {
+                        i += 1;
+                        break;
+                    }
+
+                    // Optional "Not" prefix.
+                    let mut negated = false;
+                    if i + 3 <= n
+                        && bytes[i..i + 3].eq_ignore_ascii_case(b"Not")
+                        && (i + 3 == n
+                            || matches!(bytes[i + 3], b' ' | b'\t' | b'<' | b'[' | b'\r' | b'\n'))
+                    {
+                        negated = true;
+                        i += 3;
+                        while i < n && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+                            i += 1;
+                        }
+                    }
+                    if i >= n {
+                        break;
+                    }
+
+                    match bytes[i] {
+                        b'<' => {
+                            i += 1;
+                            let start = i;
+                            while i < n && bytes[i] != b'>' {
+                                i += 1;
+                            }
+                            let token = std::str::from_utf8(&bytes[start..i])
+                                .unwrap_or_default()
+                                .to_string();
+                            if i < n {
+                                i += 1;
+                            }
+                            list.push(IfCondition::StateToken { negated, token });
+                        }
+                        b'[' => {
+                            i += 1;
+                            let start = i;
+                            while i < n && bytes[i] != b']' {
+                                i += 1;
+                            }
+                            let etag = std::str::from_utf8(&bytes[start..i])
+                                .unwrap_or_default()
+                                .trim()
+                                .trim_matches('"')
+                                .to_string();
+                            if i < n {
+                                i += 1;
+                            }
+                            list.push(IfCondition::EntityTag { negated, etag });
+                        }
+                        _ => {
+                            // Malformed — skip a byte and continue trying.
+                            i += 1;
+                        }
+                    }
+                }
+                if !list.is_empty() {
+                    lists.push(list);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    lists
+}
+
+/// Evaluate a parsed `If:` header against the current resource state.
 ///
-/// Shared by `handle_put` now and will be reused by `handle_delete`,
-/// `handle_move`, `handle_copy`, and `handle_proppatch` when each of
-/// those gets the same enforcement.
+/// Returns `(header_true, submitted_active_lock)`:
+/// - `header_true` — at least one `List` (AND of Conditions) evaluates
+///   true, so the OR-across-Lists holds and the precondition passes.
+/// - `submitted_active_lock` — some non-negated `State-token` Condition
+///   presented the resource's actual lock token. Used to distinguish
+///   412 (precondition failed) from 423 (locked resource, no matching
+///   token submitted) per RFC 4918 §10.4.9 / §6.6.
+///
+/// Empty `lists` (parse failed / header absent) → treated as
+/// vacuously true. Callers handle the "no If: header on a locked
+/// resource" case separately.
+fn evaluate_if_header(
+    lists: &IfLists,
+    active_lock_token: Option<&str>,
+    current_etag: Option<&str>,
+) -> (bool, bool) {
+    if lists.is_empty() {
+        return (true, false);
+    }
+
+    // First pass — scan every non-negated State-token so we can flag
+    // "the caller did submit the lock" even for Lists that fail on other
+    // Conditions. This drives the 412-vs-423 discrimination downstream.
+    let mut submitted_active_lock = false;
+    if let Some(active) = active_lock_token {
+        for list in lists {
+            for cond in list {
+                if let IfCondition::StateToken {
+                    negated: false,
+                    token,
+                } = cond
+                    && token == active
+                {
+                    submitted_active_lock = true;
+                }
+            }
+        }
+    }
+
+    // Second pass — AND within each List, OR across Lists.
+    let any_list_true = lists.iter().any(|list| {
+        list.iter().all(|cond| {
+            let (negated, natural) = match cond {
+                IfCondition::StateToken { negated, token } => {
+                    let is_active = active_lock_token == Some(token.as_str());
+                    (*negated, is_active)
+                }
+                IfCondition::EntityTag {
+                    negated,
+                    etag: cond_etag,
+                } => {
+                    let matches = current_etag
+                        .map(|c| c.trim().trim_matches('"') == cond_etag.trim().trim_matches('"'))
+                        .unwrap_or(false);
+                    (*negated, matches)
+                }
+            };
+            natural ^ negated
+        })
+    });
+
+    (any_list_true, submitted_active_lock)
+}
+
+/// RFC 4918 §9.10.4 / §10.4 — evaluate the caller's `If:` header
+/// against the resource's active lock and current ETag.
+///
+/// Returns `Some(Response)` when the request must be rejected —
+/// **412 Precondition Failed** when the header's conditions can't be
+/// satisfied by the current state, **423 Locked** when the resource is
+/// locked and no submitted alternative includes its lock token (per
+/// §10.4.9 / §6.6). Returns `None` when the request may proceed.
+///
+/// `current_etag` is the resource's ETag (raw, unquoted) if it exists;
+/// pass `None` for a not-yet-existing target. Callers that don't have
+/// the resolved etag at the call site pass `None` — any `[etag]`
+/// condition then evaluates false, which is the correct fail-closed
+/// behaviour for the "resource doesn't exist yet" case.
+///
+/// Shared by `handle_put`, `handle_delete`, `handle_move`,
+/// `handle_copy`, and `handle_proppatch`.
 fn enforce_native_lock(
     lock_store: &crate::infrastructure::services::webdav_lock_service::WebDavLockStore,
     if_header: Option<&str>,
     path: &str,
+    current_etag: Option<&str>,
 ) -> Option<Response<Body>> {
     // Check the exact path, then walk up parent collections for depth-infinity
     // locks (RFC 4918 §6.1: a lock on a collection with Depth: infinity also
@@ -1309,15 +1475,47 @@ fn enforce_native_lock(
         }
     });
 
-    if let Some(entry) = entry {
-        // Resource is locked: caller must supply the matching token in If:.
-        if let Some(h) = if_header
-            && extract_if_header_tokens(h)
-                .iter()
-                .any(|t| t == &entry.info.token)
-        {
-            return None;
+    let active_lock_token = entry.as_ref().map(|e| e.info.token.as_str());
+    let locked = entry.is_some();
+
+    let lists = if_header.map(parse_if_header).unwrap_or_default();
+
+    // No parseable If: header at all.
+    if lists.is_empty() {
+        // Locked without an If: header → 423 Locked (§9.10.4).
+        if locked {
+            return Some(
+                Response::builder()
+                    .status(StatusCode::LOCKED)
+                    .body(Body::empty())
+                    .unwrap(),
+            );
         }
+        return None;
+    }
+
+    let (header_true, submitted_active_lock) =
+        evaluate_if_header(&lists, active_lock_token, current_etag);
+
+    if header_true {
+        // Header preconditions satisfied. If the resource is locked but
+        // the satisfying List did so via etag / Not-token alone (never
+        // presenting the real lock token), still return 423 — §10.4.9's
+        // "matching lock token" rule.
+        if locked && !submitted_active_lock {
+            return Some(
+                Response::builder()
+                    .status(StatusCode::LOCKED)
+                    .body(Body::empty())
+                    .unwrap(),
+            );
+        }
+        return None;
+    }
+
+    // Header evaluates false. 423 if the resource is locked and the
+    // caller never presented its lock token; otherwise 412.
+    if locked && !submitted_active_lock {
         return Some(
             Response::builder()
                 .status(StatusCode::LOCKED)
@@ -1325,32 +1523,12 @@ fn enforce_native_lock(
                 .unwrap(),
         );
     }
-
-    // Resource is not locked. If the If: header references lock tokens (not
-    // resource-tag URLs), every such token must be active somewhere in the
-    // store. A stale or fabricated token (e.g. DAV:no-lock) never matches,
-    // so the If: condition fails → 412 Precondition Failed (RFC 4918 §10.4).
-    if let Some(h) = if_header {
-        let tokens = extract_if_header_tokens(h);
-        let lock_refs: Vec<_> = tokens
-            .iter()
-            .filter(|t| !t.starts_with("http://") && !t.starts_with("https://"))
-            .collect();
-        if !lock_refs.is_empty()
-            && !lock_refs
-                .iter()
-                .any(|t| lock_store.get_by_token(t).is_some())
-        {
-            return Some(
-                Response::builder()
-                    .status(StatusCode::PRECONDITION_FAILED)
-                    .body(Body::empty())
-                    .unwrap(),
-            );
-        }
-    }
-
-    None
+    Some(
+        Response::builder()
+            .status(StatusCode::PRECONDITION_FAILED)
+            .body(Body::empty())
+            .unwrap(),
+    )
 }
 
 /**
@@ -1413,13 +1591,6 @@ async fn handle_put(
         .unwrap_or("application/octet-stream")
         .to_string();
     let max_upload = state.core.config.storage.direct_put_max_bytes;
-
-    // ── Active-lock guard (RFC 4918 §9.10.4) ──────────────────────────
-    if let Some(resp) =
-        enforce_native_lock(&state.webdav_lock_store, if_header_owned.as_deref(), &path)
-    {
-        return Ok(resp);
-    }
 
     // `drive_id` is the path-lookup scope post-D0 — resolve once from
     // the caller's default drive, reused by the resolver checks below
@@ -1494,6 +1665,21 @@ async fn handle_put(
                 }
             }
         }
+    }
+
+    // ── Active-lock guard + RFC 4918 §10.4 If: evaluation ─────────────
+    // Deferred until after the existence check so `current_etag` is
+    // available to the If: header's `[etag]` conditions. `handle_put`
+    // is the only site where litmus exercises the full §10.4 grammar
+    // (locks/fail_complex_cond_put); other handlers pass `None` and
+    // fall back to the existence-only semantics.
+    if let Some(resp) = enforce_native_lock(
+        &state.webdav_lock_store,
+        if_header_owned.as_deref(),
+        &path,
+        current_etag.as_deref(),
+    ) {
+        return Ok(resp);
     }
 
     // ── RFC 7232 conditional preconditions ────────────────────────────
@@ -1798,9 +1984,12 @@ async fn handle_delete(
         .get("If")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    if let Some(resp) =
-        enforce_native_lock(&state.webdav_lock_store, if_header_owned.as_deref(), &path)
-    {
+    if let Some(resp) = enforce_native_lock(
+        &state.webdav_lock_store,
+        if_header_owned.as_deref(),
+        &path,
+        None,
+    ) {
         return Ok(resp);
     }
 
@@ -1880,6 +2069,7 @@ async fn handle_move(
         &state.webdav_lock_store,
         if_header_owned.as_deref(),
         &source_path,
+        None,
     ) {
         return Ok(resp);
     }
@@ -1935,6 +2125,7 @@ async fn handle_move(
         &state.webdav_lock_store,
         if_header_owned.as_deref(),
         &destination_path,
+        None,
     ) {
         return Ok(resp);
     }
@@ -2209,6 +2400,7 @@ async fn handle_copy(
         &state.webdav_lock_store,
         if_header_owned.as_deref(),
         &destination_path,
+        None,
     ) {
         return Ok(resp);
     }
@@ -2580,6 +2772,194 @@ async fn handle_unlock(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── RFC 4918 §10.4 If: header parser + evaluator ────────────────
+
+    #[test]
+    fn parse_if_simple_state_token() {
+        let lists = parse_if_header("(<opaquelocktoken:xyz>)");
+        assert_eq!(
+            lists,
+            vec![vec![IfCondition::StateToken {
+                negated: false,
+                token: "opaquelocktoken:xyz".to_string(),
+            }]]
+        );
+    }
+
+    #[test]
+    fn parse_if_no_tag_list_two_lists() {
+        let lists = parse_if_header("(<T1>) (Not <DAV:no-lock>)");
+        assert_eq!(lists.len(), 2);
+        assert_eq!(
+            lists[0],
+            vec![IfCondition::StateToken {
+                negated: false,
+                token: "T1".to_string(),
+            }]
+        );
+        assert_eq!(
+            lists[1],
+            vec![IfCondition::StateToken {
+                negated: true,
+                token: "DAV:no-lock".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_if_state_token_and_etag() {
+        let lists = parse_if_header("(<T1> [\"abc123\"])");
+        assert_eq!(
+            lists[0],
+            vec![
+                IfCondition::StateToken {
+                    negated: false,
+                    token: "T1".to_string(),
+                },
+                IfCondition::EntityTag {
+                    negated: false,
+                    etag: "abc123".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_if_tagged_list_resource_ignored() {
+        // Tagged-list — the Resource prefix `<http://…/foo>` scopes the
+        // following Lists; our parser accepts but doesn't honour scoping.
+        let lists = parse_if_header("<http://example.com/foo> (<T1>)");
+        assert_eq!(lists.len(), 1);
+        assert_eq!(
+            lists[0],
+            vec![IfCondition::StateToken {
+                negated: false,
+                token: "T1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_if_complex_two_lists_token_and_etag() {
+        // The litmus fail_complex_cond_put shape.
+        let lists =
+            parse_if_header("(<opaquelocktoken:xyz> [\"etag1\"]) (Not <DAV:no-lock> [\"etag2\"])");
+        assert_eq!(lists.len(), 2);
+        assert_eq!(lists[0].len(), 2);
+        assert_eq!(lists[1].len(), 2);
+        assert_eq!(
+            lists[1][0],
+            IfCondition::StateToken {
+                negated: true,
+                token: "DAV:no-lock".to_string(),
+            }
+        );
+    }
+
+    // Litmus `cond_put`: locked resource, `(<token> [etag])`, matches
+    // both → header true, submitted the lock → proceed.
+    #[test]
+    fn evaluate_cond_put_success() {
+        let lists = parse_if_header("(<opaquelocktoken:xyz> [\"abc\"])");
+        let (matches, submitted) =
+            evaluate_if_header(&lists, Some("opaquelocktoken:xyz"), Some("abc"));
+        assert!(matches);
+        assert!(submitted);
+    }
+
+    // Litmus `fail_cond_put`: locked resource, bogus token, valid etag
+    // → List has token=FALSE AND etag=TRUE → FALSE. No matching token
+    // submitted → 423 (caller returns Locked).
+    #[test]
+    fn evaluate_fail_cond_put_bogus_token_valid_etag() {
+        let lists = parse_if_header("(<DAV:no-lock> [\"abc\"])");
+        let (matches, submitted) =
+            evaluate_if_header(&lists, Some("opaquelocktoken:xyz"), Some("abc"));
+        assert!(!matches);
+        assert!(!submitted);
+    }
+
+    // Litmus `fail_cond_put_unlocked`: unlocked resource, bogus token
+    // → List fails. No lock to submit → 412.
+    #[test]
+    fn evaluate_fail_cond_put_unlocked() {
+        let lists = parse_if_header("(<DAV:no-lock>)");
+        let (matches, submitted) = evaluate_if_header(&lists, None, None);
+        assert!(!matches);
+        assert!(!submitted);
+    }
+
+    // Litmus `cond_put_with_not`: locked, `(<token>) (Not <DAV:no-lock>)`
+    // → List 1 true (token match). Header true. Submitted → proceed.
+    #[test]
+    fn evaluate_cond_put_with_not() {
+        let lists = parse_if_header("(<opaquelocktoken:xyz>) (Not <DAV:no-lock>)");
+        let (matches, submitted) = evaluate_if_header(&lists, Some("opaquelocktoken:xyz"), None);
+        assert!(matches);
+        assert!(submitted);
+    }
+
+    // Litmus `cond_put_corrupt_token`: locked, `(<corrupt>) (Not <DAV:no-lock>)`
+    // → List 2 (Not <DAV:no-lock>) is TRUE, header matches. But no
+    // active-lock token submitted → 423 per §10.4.9.
+    #[test]
+    fn evaluate_cond_put_corrupt_token() {
+        let lists = parse_if_header("(<opaquelocktoken:corrupt>) (Not <DAV:no-lock>)");
+        let (matches, submitted) = evaluate_if_header(&lists, Some("opaquelocktoken:xyz"), None);
+        assert!(matches);
+        assert!(!submitted);
+    }
+
+    // Litmus `complex_cond_put`: locked, `(<token> [etag]) (Not <no-lock> [etag])`
+    // with the CORRECT etag → List 1 true. Header true. Submitted → proceed.
+    #[test]
+    fn evaluate_complex_cond_put_success() {
+        let lists =
+            parse_if_header("(<opaquelocktoken:xyz> [\"abc\"]) (Not <DAV:no-lock> [\"abc\"])");
+        let (matches, submitted) =
+            evaluate_if_header(&lists, Some("opaquelocktoken:xyz"), Some("abc"));
+        assert!(matches);
+        assert!(submitted);
+    }
+
+    // Litmus `fail_complex_cond_put`: locked, `(<token> [corrupt]) (Not <no-lock> [corrupt])`
+    // → both Lists AND to false (etag mismatch). Header FALSE. Token
+    // WAS submitted (in List 1) → 412 not 423.
+    #[test]
+    fn evaluate_fail_complex_cond_put() {
+        let lists = parse_if_header(
+            "(<opaquelocktoken:xyz> [\"corrupt\"]) (Not <DAV:no-lock> [\"corrupt\"])",
+        );
+        let (matches, submitted) =
+            evaluate_if_header(&lists, Some("opaquelocktoken:xyz"), Some("abc"));
+        assert!(!matches);
+        assert!(
+            submitted,
+            "the valid token IS submitted, even though etag conditions fail"
+        );
+    }
+
+    #[test]
+    fn evaluate_etag_with_quotes_matches_raw() {
+        // The stored etag is raw (unquoted). The If: header quotes it.
+        // trim_matches should normalise both sides.
+        let lists = parse_if_header("([\"abc123-1234\"])");
+        let (matches, _) = evaluate_if_header(&lists, None, Some("abc123-1234"));
+        assert!(matches);
+    }
+
+    #[test]
+    fn parse_if_empty_returns_no_lists() {
+        assert_eq!(parse_if_header("").len(), 0);
+    }
+
+    #[test]
+    fn evaluate_empty_lists_is_true() {
+        let (matches, submitted) = evaluate_if_header(&Vec::new(), None, None);
+        assert!(matches);
+        assert!(!submitted);
+    }
 
     #[test]
     fn test_webdav_href_no_trailing_slash() {
