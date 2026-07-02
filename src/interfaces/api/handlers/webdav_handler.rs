@@ -427,7 +427,6 @@ async fn handle_propfind(
             name: "".to_string(),
             path: "".to_string(),
             parent_id: None,
-            owner_id: None,
             // Synthetic root folder for PROPFIND on `/`; not an
             // actual DB row, so drive_id has no meaningful value.
             drive_id: Uuid::nil(),

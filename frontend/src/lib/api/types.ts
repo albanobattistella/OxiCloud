@@ -24,26 +24,17 @@ export interface FolderItem {
 	is_root: boolean;
 	modified_at: number;
 	name: string;
-	// `null` on share-recipient responses — the backend's
-	// `FolderDto::without_hierarchy_info` (folder_dto.rs:154) clears
-	// hierarchy fields (including owner_id) for non-owner callers.
-	// Backend serialises `Option<String>` (folder_dto.rs:53); this
-	// type just tells the truth about the wire.
-	//
-	// Deprecated post-D7 (frontend cutover): callers should prefer
-	// `created_by` / `updated_by` instead — they carry §14 provenance
-	// and survive the drop of `storage.folders.user_id`. The
-	// `owner_id` field will be removed from the wire once every
-	// callsite has moved.
-	owner_id: string | null;
 	// §14 provenance — who originally created the folder. `null` when
 	// the creating user has since been deleted (backend FK is
-	// `ON DELETE SET NULL`). Preferred over `owner_id` on the Files
-	// browser owner column and the Favorites / Shared surfaces.
+	// `ON DELETE SET NULL`), or when the folder is returned to a
+	// share recipient that lost provenance via
+	// `FolderDto::without_hierarchy_info`. The canonical "owner"
+	// signal on the Files browser / Favorites / Shared surfaces
+	// (replaced the retired `owner_id` field in D7).
 	created_by: string | null;
 	// §14 provenance — who last touched the folder (rename / move /
-	// metadata change). Preferred over `owner_id` on the Recent
-	// surface, where "who touched this recently" is the intent.
+	// metadata change). The canonical "who touched this recently"
+	// signal on the Recent surface.
 	updated_by: string | null;
 	parent_id: string | null;
 	path: string;
@@ -59,13 +50,8 @@ export interface FileItem {
 	mime_type: string;
 	modified_at: number;
 	name: string;
-	// `null` on share-recipient responses (same as FolderItem above).
-	// Backend serialises `Option<String>` at file_dto.rs:59.
-	//
-	// Deprecated post-D7 (frontend cutover): prefer `created_by` /
-	// `updated_by` as documented on `FolderItem`.
-	owner_id: string | null;
-	// §14 provenance — see FolderItem for semantics.
+	// §14 provenance — see FolderItem for semantics. Replaced the
+	// retired `owner_id` field in D7.
 	created_by: string | null;
 	updated_by: string | null;
 	folder_id: string;
@@ -124,7 +110,6 @@ export interface FavoriteItem {
 	icon_special_class: string;
 	category: string;
 	size_formatted: string;
-	owner_id: string | null;
 }
 
 export interface RecentItem {

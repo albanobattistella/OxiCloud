@@ -30,7 +30,6 @@ export function minimalPhotoItem(id: string): FileItem {
 		mime_type: 'image/jpeg',
 		modified_at: 0,
 		name: '',
-		owner_id: '',
 		created_by: null,
 		updated_by: null,
 		folder_id: '',

@@ -20,7 +20,6 @@ function item(id: string) {
 		mime_type: 'image/jpeg',
 		category: 'Image',
 		folder_id: '',
-		owner_id: '',
 		created_by: null,
 		updated_by: null,
 		path: '',

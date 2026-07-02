@@ -45,7 +45,6 @@ function withOneFile() {
 					mime_type: 'text/plain',
 					modified_at: 0,
 					name: 'notes.txt',
-					owner_id: 'me',
 					created_by: 'me',
 					updated_by: 'me',
 					folder_id: 'root',

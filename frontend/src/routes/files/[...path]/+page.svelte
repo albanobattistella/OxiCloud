@@ -1798,7 +1798,7 @@
 			<span class="grid-meta__date">{relativeTimeAgo(folder.modified_at)}</span>
 		</div>
 		<div class="owner-cell">
-			{ownerLabel(folder.created_by ?? folder.owner_id, session.user?.id ?? null)}
+			{ownerLabel(folder.created_by, session.user?.id ?? null)}
 		</div>
 		<div class="type-cell">{t('files.file_types.folder', 'Folder')}</div>
 		<div class="size-cell">—</div>
@@ -1930,7 +1930,7 @@
 			{#if file.size != null}<span class="grid-meta__size">{formatBytes(file.size)}</span>{/if}
 		</div>
 		<div class="owner-cell">
-			{ownerLabel(file.created_by ?? file.owner_id, session.user?.id ?? null)}
+			{ownerLabel(file.created_by, session.user?.id ?? null)}
 		</div>
 		<div class="type-cell">{typeLabel(file.category)}</div>
 		<div class="size-cell">{file.size != null ? formatBytes(file.size) : ''}</div>

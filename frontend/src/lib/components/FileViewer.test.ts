@@ -28,7 +28,6 @@ function file(over: Record<string, unknown> = {}) {
 		mime_type: 'image/png',
 		category: 'Image',
 		folder_id: '',
-		owner_id: '',
 		created_by: null,
 		updated_by: null,
 		path: '',

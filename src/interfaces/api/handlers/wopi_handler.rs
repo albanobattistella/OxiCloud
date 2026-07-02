@@ -101,7 +101,13 @@ async fn check_file_info(
 
     let response = CheckFileInfoResponse {
         base_file_name: file.name.clone(),
-        owner_id: file.owner_id.clone().unwrap_or_else(|| claims.sub.clone()),
+        // WOPI's `OwnerId` field is required. Post-D7 the DTO no
+        // longer carries `owner_id`; fall back to `created_by`
+        // (§14 provenance) with the requesting user as a final default.
+        owner_id: file
+            .created_by
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| claims.sub.clone()),
         size: file.size,
         user_id: claims.sub.clone(),
         version: file.modified_at.to_string(),

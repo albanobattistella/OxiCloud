@@ -374,7 +374,6 @@ impl TrashDbRepository {
         -1::bigint                                           AS size,
         fld.created_at                                       AS resource_created_at,
         fld.updated_at                                       AS modified_at,
-        fld.user_id                                          AS owner_id,
         fld.drive_id                                         AS drive_id,
         NULL::text                                           AS blob_hash,
         fld.trashed_at                                       AS trashed_at,
@@ -401,7 +400,6 @@ impl TrashDbRepository {
         f.size::bigint                                       AS size,
         f.created_at                                         AS resource_created_at,
         f.updated_at                                         AS modified_at,
-        f.user_id                                            AS owner_id,
         f.drive_id                                           AS drive_id,
         f.blob_hash,
         f.trashed_at                                         AS trashed_at,
@@ -533,7 +531,7 @@ impl TrashDbRepository {
 SELECT
     r.resource_type, r.resource_id, r.name, r.parent_id,
     r.mime_type, r.size, r.resource_created_at, r.modified_at,
-    r.owner_id, r.drive_id, r.trashed_at, r.deletion_date, r.resource_path,
+    r.drive_id, r.trashed_at, r.deletion_date, r.resource_path,
     r.sort_str, r.type_order, r.folder_first
 FROM resources r
 {keyset}
@@ -590,7 +588,6 @@ LIMIT $6"
                     size,
                     resource_created_at: row.get("resource_created_at"),
                     modified_at: row.get("modified_at"),
-                    owner_id: row.try_get("owner_id").ok(),
                     drive_id: row.get("drive_id"),
                     blob_hash: row.try_get("blob_hash").ok(),
                     trashed_at,

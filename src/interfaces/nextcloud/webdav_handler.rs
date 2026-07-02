@@ -1811,7 +1811,6 @@ mod tests {
             name: path.rsplit('/').next().unwrap_or("").to_string(),
             path: path.to_string(),
             parent_id: None,
-            owner_id: None,
             // Test stub — path mapper doesn't read drive_id.
             drive_id: uuid::Uuid::nil(),
             created_at: 0,
