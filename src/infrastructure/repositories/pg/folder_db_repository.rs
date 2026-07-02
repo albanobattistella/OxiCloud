@@ -28,12 +28,16 @@ use crate::domain::services::path_service::StoragePath;
 /// `drive_id` is the post-D0 `NOT NULL` scope axis for path-based
 /// lookups. `created_by` / `updated_by` are the §14 provenance
 /// columns, nullable because the FK is `ON DELETE SET NULL`.
+///
+/// Post-D7 `user_id` is `Option<Uuid>` — the column is nullable and
+/// left NULL on new rows (see migration
+/// `20260902000000_files_folders_user_id_nullable.sql`).
 type FolderRow = (
     String,
     String,
     String,
     Option<String>,
-    Uuid,
+    Option<Uuid>,
     Uuid,
     i64,
     i64,
@@ -43,13 +47,14 @@ type FolderRow = (
 );
 
 /// Type alias for paginated folder rows (includes total_count as
-/// the last element after the §14 provenance columns).
+/// the last element after the §14 provenance columns). Same
+/// nullability semantics as [`FolderRow`].
 type FolderRowPaginated = (
     String,
     String,
     String,
     Option<String>,
-    Uuid,
+    Option<Uuid>,
     Uuid,
     i64,
     i64,
@@ -59,7 +64,8 @@ type FolderRowPaginated = (
     i64,
 );
 
-/// Type alias for folder rows with optional user_id.
+/// Type alias for folder rows with optional user_id — kept as a
+/// separate name for the search-shape SELECTs.
 /// Includes the §14 provenance columns `created_by` / `updated_by`.
 type FolderRowOptUser = (
     String,
@@ -201,9 +207,7 @@ impl FolderDbRepository {
         .map_err(|e| DomainError::internal_error("FolderDb", format!("get_folders_by_ids: {e}")))?;
 
         rows.into_iter()
-            .map(|r| {
-                Self::row_to_folder(r.0, r.1, r.2, r.3, Some(r.4), r.5, r.6, r.7, r.8, r.9, r.10)
-            })
+            .map(|r| Self::row_to_folder(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10))
             .collect()
     }
 }
@@ -215,13 +219,19 @@ impl FolderRepository for FolderDbRepository {
         parent_id: Option<String>,
         caller_id: Uuid,
     ) -> Result<Folder, DomainError> {
-        // Derive (user_id, drive_id) from parent folder in one round-trip.
-        // Root-level folders require the caller to have set up the home
-        // drive beforehand (done during user registration via the
-        // lifecycle hook).
-        let (user_id, drive_id): (Uuid, Uuid) = if let Some(ref pid) = parent_id {
-            sqlx::query_as::<_, (Uuid, Uuid)>(
-                "SELECT user_id, drive_id FROM storage.folders WHERE id = $1::uuid",
+        // Derive `drive_id` from the parent folder. Root-level folders
+        // are reserved for the atomic drive-creation transaction in
+        // `DrivePgRepository::create_personal_drive_atomic` (see
+        // `docs/plan/drive.md` §3) — the no-orphan-root-folder trigger
+        // enforces this at the DB level.
+        //
+        // Post-D7: only `drive_id` is fetched from the parent. The
+        // legacy `user_id` column is no longer written to on new rows
+        // (migration `20260902000000_files_folders_user_id_nullable.sql`);
+        // provenance flows through `created_by` / `updated_by` (§14).
+        let drive_id: Uuid = if let Some(ref pid) = parent_id {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT drive_id FROM storage.folders WHERE id = $1::uuid",
             )
             .bind(pid)
             .fetch_optional(self.pool())
@@ -238,20 +248,20 @@ impl FolderRepository for FolderDbRepository {
             ));
         };
 
-        // D0 dual-write: drive_id alongside user_id (drops in D7); plus
-        // §14 provenance — `created_by` / `updated_by` bind to the caller
-        // ($5), NOT to the parent folder's `user_id`. Pre-D2 they're
-        // silently equivalent (only the parent's owner can write); the
-        // distinction matters once shared drives let an Editor mutate
-        // a folder owned by someone else.
+        // Post-D7: no `user_id` in the INSERT column list — the column
+        // is nullable and copied rows / new rows leave it NULL.
+        // `created_by` / `updated_by` carry §14 provenance (both bind to
+        // the caller — pre-D2 that's silently the parent's owner too,
+        // but the distinction matters once shared drives let an Editor
+        // mutate a folder owned by someone else).
         //
-        // RETURNING also surfaces the two provenance columns so the
-        // built entity / DTO carries fresh values without a re-read.
+        // RETURNING surfaces the two provenance columns so the built
+        // entity / DTO carries fresh values without a re-read.
         let row = sqlx::query_as::<_, (String, String, i64, i64, i64, Option<Uuid>, Option<Uuid>)>(
             r#"
             INSERT INTO storage.folders
-                (name, parent_id, user_id, drive_id, created_by, updated_by)
-            VALUES ($1, $2::uuid, $3, $4, $5, $5)
+                (name, parent_id, drive_id, created_by, updated_by)
+            VALUES ($1, $2::uuid, $3, $4, $4)
             RETURNING id::text,
                       path,
                       EXTRACT(EPOCH FROM created_at)::bigint,
@@ -263,7 +273,6 @@ impl FolderRepository for FolderDbRepository {
         )
         .bind(&name)
         .bind(&parent_id)
-        .bind(user_id)
         .bind(drive_id)
         .bind(caller_id)
         .fetch_one(self.pool())
@@ -281,18 +290,11 @@ impl FolderRepository for FolderDbRepository {
         })?;
 
         Self::row_to_folder(
-            row.0,
-            name,
-            row.1,
-            parent_id,
-            Some(user_id),
-            drive_id,
-            row.2,
-            row.3,
-            row.4,
+            row.0, name, row.1, parent_id,
+            None, // Post-D7: `folders.user_id` no longer written on new rows.
+            drive_id, row.2, row.3, row.4,
             // Fresh from RETURNING — caller_id was bound to both columns.
-            row.5,
-            row.6,
+            row.5, row.6,
         )
     }
 
@@ -315,17 +317,7 @@ impl FolderRepository for FolderDbRepository {
         .ok_or_else(|| DomainError::not_found("Folder", id))?;
 
         Self::row_to_folder(
-            row.0,
-            row.1,
-            row.2,
-            row.3,
-            Some(row.4),
-            row.5,
-            row.6,
-            row.7,
-            row.8,
-            row.9,
-            row.10,
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
         )
     }
 
@@ -368,17 +360,7 @@ impl FolderRepository for FolderDbRepository {
         .ok_or_else(|| DomainError::not_found("Folder", lookup))?;
 
         Self::row_to_folder(
-            row.0,
-            row.1,
-            row.2,
-            row.3,
-            Some(row.4),
-            row.5,
-            row.6,
-            row.7,
-            row.8,
-            row.9,
-            row.10,
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
         )
     }
 
@@ -420,7 +402,7 @@ impl FolderRepository for FolderDbRepository {
 
         rows.into_iter()
             .map(|(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)| {
-                Self::row_to_folder(id, name, path, pid, Some(uid), did, ca, ma, tma, cb, ub)
+                Self::row_to_folder(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)
             })
             .collect()
     }
@@ -468,7 +450,7 @@ impl FolderRepository for FolderDbRepository {
 
         rows.into_iter()
             .map(|(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)| {
-                Self::row_to_folder(id, name, path, pid, Some(uid), did, ca, ma, tma, cb, ub)
+                Self::row_to_folder(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)
             })
             .collect()
     }
@@ -537,7 +519,7 @@ impl FolderRepository for FolderDbRepository {
             .into_iter()
             .map(
                 |(id, name, path, pid, uid, did, ca, ma, tma, cb, ub, _total)| {
-                    Self::row_to_folder(id, name, path, pid, Some(uid), did, ca, ma, tma, cb, ub)
+                    Self::row_to_folder(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)
                 },
             )
             .collect();
@@ -590,7 +572,7 @@ impl FolderRepository for FolderDbRepository {
             .into_iter()
             .map(
                 |(id, name, path, pid, uid, did, ca, ma, tma, cb, ub, _total)| {
-                    Self::row_to_folder(id, name, path, pid, Some(uid), did, ca, ma, tma, cb, ub)
+                    Self::row_to_folder(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)
                 },
             )
             .collect();
@@ -644,17 +626,7 @@ impl FolderRepository for FolderDbRepository {
         .ok_or_else(|| DomainError::not_found("Folder", id))?;
 
         Self::row_to_folder(
-            row.0,
-            row.1,
-            row.2,
-            row.3,
-            Some(row.4),
-            row.5,
-            row.6,
-            row.7,
-            row.8,
-            row.9,
-            row.10,
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
         )
     }
 
@@ -708,17 +680,7 @@ impl FolderRepository for FolderDbRepository {
         .ok_or_else(|| DomainError::not_found("Folder", id))?;
 
         Self::row_to_folder(
-            row.0,
-            row.1,
-            row.2,
-            row.3,
-            Some(row.4),
-            row.5,
-            row.6,
-            row.7,
-            row.8,
-            row.9,
-            row.10,
+            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
         )
     }
 
@@ -1305,7 +1267,7 @@ impl FolderRepository for FolderDbRepository {
 
         rows.into_iter()
             .map(|(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)| {
-                Self::row_to_folder(id, name, path, pid, Some(uid), did, ca, ma, tma, cb, ub)
+                Self::row_to_folder(id, name, path, pid, uid, did, ca, ma, tma, cb, ub)
             })
             .collect()
     }
@@ -1594,7 +1556,7 @@ impl FolderDbRepository {
             i64,
             chrono::DateTime<chrono::Utc>,
             chrono::DateTime<chrono::Utc>,
-            Uuid,
+            Option<Uuid>, // user_id (post-D7: nullable on new rows)
             Uuid,
             Option<String>,
             String,

@@ -1081,17 +1081,18 @@ mod cascade_hook_integration_tests {
         let blob_hash = blake3::hash(format!("cascade-{label}-{}", Uuid::new_v4()).as_bytes())
             .to_hex()
             .to_string();
+        // Post-D7: `user_id` omitted — the column is nullable and
+        // provenance flows through `created_by` / `updated_by`.
         sqlx::query_scalar(
             "INSERT INTO storage.files
-                 (name, user_id, drive_id, folder_id, blob_hash, size, created_by, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+                 (name, drive_id, folder_id, blob_hash, size, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $6)
              RETURNING id",
         )
         .bind(format!(
             "rust-test-cascade-{label}-{}",
             &Uuid::new_v4().to_string()[..8]
         ))
-        .bind(user_id)
         .bind(drive_id)
         .bind(folder_id)
         .bind(&blob_hash)

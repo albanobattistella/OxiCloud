@@ -1127,11 +1127,36 @@ impl DedupService {
             .unwrap_or(false)
     }
 
-    /// Returns `true` if `user_id` owns at least one (even trashed) file that
-    /// references the blob identified by `hash`.
+    /// Returns `true` if the caller has a **writable role** on at least one
+    /// drive containing a (possibly trashed) file that references the blob
+    /// identified by `hash`.
+    ///
+    /// Post-D7 (`project_d7_policy_calls` LOCKED): same
+    /// drive-membership + writable-role predicate as
+    /// [`claimable_chunks`] / [`pin_claimable_chunks`] — MUST stay in
+    /// lockstep with them. Group memberships (direct + transitive)
+    /// expand inline via `storage.caller_group_ids($2)`. Viewers /
+    /// commenters are excluded — they can't legitimately upload into
+    /// a drive, so they can't claim "already-uploaded" via dedup.
     pub async fn user_owns_blob_reference(&self, hash: &str, user_id: &str) -> bool {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM storage.files WHERE blob_hash = $1 AND user_id = $2::uuid)",
+            "SELECT EXISTS(
+                SELECT 1
+                  FROM storage.files f
+                 WHERE f.blob_hash = $1
+                   AND EXISTS (
+                         SELECT 1 FROM storage.role_grants g
+                          WHERE g.resource_type = 'drive'
+                            AND g.resource_id   = f.drive_id
+                            AND g.role IN ('owner', 'editor', 'contributor')
+                            AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                            AND (
+                                  (g.subject_type = 'user'  AND g.subject_id = $2::uuid)
+                               OR (g.subject_type = 'group' AND g.subject_id IN
+                                       (SELECT storage.caller_group_ids($2::uuid)))
+                                )
+                       )
+             )",
         )
         .bind(hash)
         .bind(user_id)
@@ -1141,13 +1166,14 @@ impl DedupService {
     }
 
     /// Batch variant of [`Self::user_owns_blob_reference`]: given candidate
-    /// hashes, return the subset the user already references — in ONE query
-    /// (backed by `idx_files_blob_hash`). Lets a client hash a whole upload set
-    /// and learn which files it can skip with a single round trip instead of
-    /// one probe per file.
+    /// hashes, return the subset the caller can already reference — in ONE
+    /// query (backed by `idx_files_blob_hash`). Lets a client hash a whole
+    /// upload set and learn which files it can skip with a single round trip
+    /// instead of one probe per file.
     ///
-    /// User-scoped, exactly like the single check: only the caller's own blobs
-    /// are returned, so it cannot probe whether *other* users hold a blob.
+    /// Post-D7: same drive-membership + writable-role predicate as the
+    /// single check. Anti-enumeration is preserved — only hashes present
+    /// in a drive the caller can write to come back.
     pub async fn user_owned_blob_references(
         &self,
         hashes: &[String],
@@ -1157,8 +1183,21 @@ impl DedupService {
             return Vec::new();
         }
         sqlx::query_scalar::<_, String>(
-            "SELECT DISTINCT blob_hash FROM storage.files \
-             WHERE blob_hash = ANY($1) AND user_id = $2::uuid",
+            "SELECT DISTINCT f.blob_hash
+               FROM storage.files f
+              WHERE f.blob_hash = ANY($1)
+                AND EXISTS (
+                      SELECT 1 FROM storage.role_grants g
+                       WHERE g.resource_type = 'drive'
+                         AND g.resource_id   = f.drive_id
+                         AND g.role IN ('owner', 'editor', 'contributor')
+                         AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                         AND (
+                               (g.subject_type = 'user'  AND g.subject_id = $2::uuid)
+                            OR (g.subject_type = 'group' AND g.subject_id IN
+                                    (SELECT storage.caller_group_ids($2::uuid)))
+                             )
+                    )",
         )
         .bind(hashes)
         .bind(user_id)
@@ -3008,19 +3047,20 @@ mod rechunk_integration_tests {
         .await
         .expect("insert legacy blob row");
 
-        let (user_id, drive_id) = seed_user(pool).await;
+        let (_user_id, drive_id) = seed_user(pool).await;
         let mut file_ids = Vec::new();
         for i in 0..n_files {
             let name = format!(
                 "rust-test-rechunk-{label}-{}-{i}",
                 &Uuid::new_v4().to_string()[..8]
             );
+            // Post-D7: `user_id` omitted — column is nullable and unused
+            // on new rows.
             let id: Uuid = sqlx::query_scalar(
-                "INSERT INTO storage.files (name, user_id, drive_id, blob_hash, size)
-                 VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                "INSERT INTO storage.files (name, drive_id, blob_hash, size)
+                 VALUES ($1, $2, $3, $4) RETURNING id",
             )
             .bind(&name)
-            .bind(user_id)
             .bind(drive_id)
             .bind(&hash)
             .bind(data.len() as i64)
@@ -3320,22 +3360,23 @@ mod delta_upload_integration_tests {
     async fn seed_owned_content(
         svc: &DedupService,
         pool: &PgPool,
-        user_id: Uuid,
+        _user_id: Uuid,
         drive_id: Uuid,
         data: &[u8],
         label: &str,
     ) -> (String, Vec<String>, Uuid) {
         let file_hash = blake3::hash(data).to_hex().to_string();
 
+        // Post-D7: `user_id` omitted — column is nullable and unused on
+        // new rows.
         let file_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO storage.files (name, user_id, drive_id, blob_hash, size)
-             VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            "INSERT INTO storage.files (name, drive_id, blob_hash, size)
+             VALUES ($1, $2, $3, $4) RETURNING id",
         )
         .bind(format!(
             "rust-test-delta-{label}-{}",
             &Uuid::new_v4().to_string()[..8]
         ))
-        .bind(user_id)
         .bind(drive_id)
         .bind(&file_hash)
         .bind(data.len() as i64)

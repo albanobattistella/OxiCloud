@@ -143,11 +143,16 @@ impl DriveRepository for DrivePgRepository {
 
         // 2. Root folder. `parent_id IS NULL` makes it a root in the
         //    drive; `drive_id` closes the FK in this direction.
+        //
+        //    Post-D7: `user_id` omitted from the INSERT column list —
+        //    the column is nullable and no longer written to on new
+        //    rows. `created_by` / `updated_by` bind to the owner
+        //    (§14 provenance).
         let folder_id: Uuid = sqlx::query_scalar(
             r#"
             INSERT INTO storage.folders
-                (name, parent_id, user_id, drive_id, created_by, updated_by)
-            VALUES ('Personal', NULL, $1, $2, $1, $1)
+                (name, parent_id, drive_id, created_by, updated_by)
+            VALUES ('Personal', NULL, $2, $1, $1)
             RETURNING id
             "#,
         )
@@ -244,14 +249,14 @@ impl DriveRepository for DrivePgRepository {
         .await
         .map_err(|e| Self::map_sqlx_err("create_shared_drive_atomic.drive", e))?;
 
-        // 2. Root folder. The folder's `user_id` carries the admin (legacy
-        //    column still NOT NULL during the dual-write window — D7
-        //    drops it once `drive_id` is the canonical ownership signal).
+        // 2. Root folder. Post-D7: `user_id` omitted — the column is
+        //    nullable and unused on new rows. `created_by` / `updated_by`
+        //    bind to `granted_by` (§14 provenance).
         let folder_id: Uuid = sqlx::query_scalar(
             r#"
             INSERT INTO storage.folders
-                (name, parent_id, user_id, drive_id, created_by, updated_by)
-            VALUES ($1, NULL, $2, $3, $2, $2)
+                (name, parent_id, drive_id, created_by, updated_by)
+            VALUES ($1, NULL, $3, $2, $2)
             RETURNING id
             "#,
         )

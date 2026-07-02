@@ -124,7 +124,10 @@ pub struct FavoriteResourceRow {
     pub size: i64,
     pub resource_created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
-    pub owner_id: Uuid,
+    /// Post-D7: nullable on new rows (the legacy `storage.{files,folders}.user_id`
+    /// column is no longer written). `is_owner` is now `false` when
+    /// this is `None` — see the SQL projection in favorites repo.
+    pub owner_id: Option<Uuid>,
     /// Drive that owns this row. Surfaced on the favorites listing
     /// so a UI can tell when a favorited item lives in a different
     /// drive than the user's home (post-D6 cross-drive moves +

@@ -242,20 +242,30 @@ impl ContentIndexWorker {
 
         // Authoritative state re-read: a queued 'upsert' whose row vanished
         // or got trashed in the meantime becomes a delete.
-        let files: Vec<(Uuid, String, String, String, String, String, i64)> =
-            if upsert_candidates.is_empty() {
-                Vec::new()
-            } else {
-                sqlx::query_as(
-                    "SELECT fi.id, fi.user_id::text, fi.drive_id::text, fi.name,
-                            fi.blob_hash, fi.mime_type, fi.size
-                       FROM storage.files fi
-                      WHERE fi.id = ANY($1) AND NOT fi.is_trashed",
-                )
-                .bind(&upsert_candidates)
-                .fetch_all(self.maintenance_pool.as_ref())
-                .await?
-            };
+        //
+        // Post-D7: `fi.user_id` is nullable and new rows land NULL.
+        // The projected `user_id::text` therefore comes back as
+        // `Option<String>`; we normalise to `""` at the tuple boundary
+        // so the downstream indexing code doesn't have to change.
+        // The Tantivy `user_id` field is defence-in-depth only — every
+        // query is Must-scoped by `drive_id`.
+        // (file_id, user_id, drive_id, name, blob_hash, mime, size).
+        // `user_id` is `Option<String>` because post-D7 `storage.files.user_id`
+        // is nullable — new rows land NULL.
+        type FileIndexRow = (Uuid, Option<String>, String, String, String, String, i64);
+        let files: Vec<FileIndexRow> = if upsert_candidates.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_as(
+                "SELECT fi.id, fi.user_id::text, fi.drive_id::text, fi.name,
+                        fi.blob_hash, fi.mime_type, fi.size
+                   FROM storage.files fi
+                  WHERE fi.id = ANY($1) AND NOT fi.is_trashed",
+            )
+            .bind(&upsert_candidates)
+            .fetch_all(self.maintenance_pool.as_ref())
+            .await?
+        };
         let found: HashSet<Uuid> = files.iter().map(|f| f.0).collect();
         deletes.extend(upsert_candidates.iter().filter(|id| !found.contains(id)));
 
@@ -301,7 +311,7 @@ impl ContentIndexWorker {
                 .map(|t| truncate_on_char(t, PREVIEW_BYTES));
             records.push(IndexDocRecord {
                 file_id: file_id.to_string(),
-                user_id,
+                user_id: user_id.unwrap_or_default(),
                 drive_id,
                 name,
                 content,

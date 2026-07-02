@@ -123,26 +123,64 @@ impl TrashRepository for TrashDbRepository {
     }
 
     async fn get_trash_items(&self, user_id: &Uuid) -> Result<Vec<TrashedItem>> {
-        let rows =
-            sqlx::query_as::<_, (Uuid, String, String, Uuid, Option<DateTime<Utc>>, String)>(
-                r#"
+        // Post-D7: the `WHERE t.user_id = $1` filter no longer works —
+        // new rows land with `user_id = NULL`, so the trash view's
+        // `user_id` projection is nullable and can't be the scope
+        // axis any more. Filter by drive-membership instead: any
+        // trashed item in a drive the caller has any role_grant on.
+        // Group memberships expand inline via
+        // `storage.caller_group_ids`. Same predicate shape as
+        // `list_root_folders_for_caller` / the file listings.
+        //
+        // Legacy method — the paginated `list_resources_paged` is
+        // the modern shape and takes explicit drive_ids from the
+        // service layer.
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                String,
+                Option<Uuid>,
+                Option<DateTime<Utc>>,
+                String,
+            ),
+        >(
+            r#"
             SELECT t.id, t.name, t.item_type, t.user_id, t.trashed_at,
                    COALESCE(p.path || '/' || t.name, t.name) AS original_path
               FROM storage.trash_items t
               LEFT JOIN storage.folders p ON p.id = t.original_parent_id
-             WHERE t.user_id = $1
+             WHERE EXISTS (
+                     SELECT 1 FROM storage.role_grants g
+                      WHERE g.resource_type = 'drive'
+                        AND g.resource_id   = t.drive_id
+                        AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                        AND (
+                              (g.subject_type = 'user'  AND g.subject_id = $1)
+                           OR (g.subject_type = 'group' AND g.subject_id IN
+                                   (SELECT storage.caller_group_ids($1)))
+                            )
+                   )
              ORDER BY t.trashed_at DESC
             "#,
-            )
-            .bind(user_id)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|e| DomainError::internal_error("TrashDb", format!("list: {e}")))?;
+        )
+        .bind(user_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("TrashDb", format!("list: {e}")))?;
 
         Ok(rows
             .into_iter()
             .map(|(id, name, item_type, uid, trashed_at, path)| {
-                self.row_to_trashed_item(id, name, item_type, uid, trashed_at, path)
+                self.row_to_trashed_item(
+                    id,
+                    name,
+                    item_type,
+                    uid.unwrap_or(*user_id),
+                    trashed_at,
+                    path,
+                )
             })
             .collect())
     }
@@ -153,7 +191,23 @@ impl TrashRepository for TrashDbRepository {
         // …)` in the service callers (`restore_item`, `delete_permanently`).
         // The drive precheck in `pg_acl_engine` then resolves Owner-on-drive
         // → Delete-permission for items in shared drives.
-        let row = sqlx::query_as::<_, (Uuid, String, String, Uuid, Option<DateTime<Utc>>, String)>(
+        //
+        // Post-D7: `t.user_id` is nullable (new rows land NULL). The
+        // entity's `user_id` field is still non-optional; fall back to
+        // `Uuid::nil()` when the view row is NULL. AuthZ decisions
+        // don't consult this field — they've already resolved the
+        // caller's role on the target's drive.
+        let row = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                String,
+                Option<Uuid>,
+                Option<DateTime<Utc>>,
+                String,
+            ),
+        >(
             r#"
             SELECT t.id, t.name, t.item_type, t.user_id, t.trashed_at,
                    COALESCE(p.path || '/' || t.name, t.name) AS original_path
@@ -168,7 +222,14 @@ impl TrashRepository for TrashDbRepository {
         .map_err(|e| DomainError::internal_error("TrashDb", format!("get: {e}")))?;
 
         Ok(row.map(|(id, name, item_type, uid, trashed_at, path)| {
-            self.row_to_trashed_item(id, name, item_type, uid, trashed_at, path)
+            self.row_to_trashed_item(
+                id,
+                name,
+                item_type,
+                uid.unwrap_or_else(Uuid::nil),
+                trashed_at,
+                path,
+            )
         }))
     }
 
@@ -529,7 +590,7 @@ LIMIT $6"
                     size,
                     resource_created_at: row.get("resource_created_at"),
                     modified_at: row.get("modified_at"),
-                    owner_id: row.get("owner_id"),
+                    owner_id: row.try_get("owner_id").ok(),
                     drive_id: row.get("drive_id"),
                     blob_hash: row.try_get("blob_hash").ok(),
                     trashed_at,

@@ -486,7 +486,7 @@ LIMIT $6"
                     size,
                     resource_created_at: row.get("resource_created_at"),
                     modified_at: row.get("modified_at"),
-                    owner_id: row.get("owner_id"),
+                    owner_id: row.try_get("owner_id").ok(),
                     drive_id: row.get("drive_id"),
                     blob_hash: row.try_get("blob_hash").ok(),
                     is_owner: row.try_get("is_owner").unwrap_or(false),

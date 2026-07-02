@@ -504,7 +504,7 @@ pub async fn list_folder_resources(
                             name: row.name.clone(),
                             path: String::new(), // cleared — share recipients must not see hierarchy
                             parent_id: row.parent_id.map(|u| u.to_string()),
-                            owner_id: Some(row.owner_id.to_string()),
+                            owner_id: row.owner_id.map(|u| u.to_string()),
                             drive_id: row.drive_id,
                             created_at: row.created_at.timestamp() as u64,
                             modified_at: row.modified_at.timestamp() as u64,
@@ -553,7 +553,7 @@ pub async fn list_folder_resources(
                             icon_special_class: Arc::from(icon_special_class_for(&row.name, mime)),
                             category: Arc::from(category_for(&row.name, mime)),
                             size_formatted: format_file_size(size_bytes),
-                            owner_id: Some(row.owner_id.to_string()),
+                            owner_id: row.owner_id.map(|u| u.to_string()),
                             sort_date: None,
                             content_hash,
                             etag,

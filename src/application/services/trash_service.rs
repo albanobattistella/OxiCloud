@@ -962,7 +962,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             name: row.name.clone(),
             path,
             parent_id: row.parent_id.map(|u| u.to_string()),
-            owner_id: Some(row.owner_id.to_string()),
+            owner_id: row.owner_id.map(|u| u.to_string()),
             // D2b: the trash listing query now SELECTs `drive_id` (the
             // unified view exposes it). Surfaced so per-drive grouping
             // in the `/trash` UI doesn't need an extra lookup per row.
@@ -1013,7 +1013,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             icon_special_class: std::sync::Arc::from(icon_special_class_for(&row.name, mime)),
             category: std::sync::Arc::from(category_for(&row.name, mime)),
             size_formatted: format_file_size(size_bytes),
-            owner_id: Some(row.owner_id.to_string()),
+            owner_id: row.owner_id.map(|u| u.to_string()),
             sort_date: None,
             content_hash,
             etag,

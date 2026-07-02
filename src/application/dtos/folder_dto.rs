@@ -205,7 +205,11 @@ pub struct FolderResourceRow {
     pub size: i64,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
-    pub owner_id: Uuid,
+    /// Post-D7: the legacy `user_id` column on `storage.{files,folders}`
+    /// is nullable — new rows leave it NULL — so this optional. UI
+    /// surfaces should prefer `created_by` / `updated_by` on the
+    /// per-resource DTO instead.
+    pub owner_id: Option<Uuid>,
     /// Drive that owns this row. Same column as
     /// `storage.folders.drive_id` / `storage.files.drive_id`. Surfaced
     /// on the listing so a UI can tell when a child lives in a

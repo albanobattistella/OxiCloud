@@ -60,7 +60,10 @@ pub struct TrashResourceRow {
     pub size: i64,
     pub resource_created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
-    pub owner_id: Uuid,
+    /// Post-D7: nullable on new rows (the legacy `storage.{files,folders}.user_id`
+    /// column is no longer written). Consumers should prefer §14
+    /// provenance columns when available.
+    pub owner_id: Option<Uuid>,
     /// Drive the trashed item belongs to. Surfaced verbatim on the wire
     /// (`TrashResourceItemDto.drive_id`) so the `/trash` UI can group by
     /// drive without an extra lookup per row. D2b: filtering by drive is
