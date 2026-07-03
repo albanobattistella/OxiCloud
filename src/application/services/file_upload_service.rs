@@ -317,19 +317,22 @@ impl FileUploadService {
     /// Incremental (`+size`, O(1)) and fire-and-forget on a background task, so
     /// it adds neither latency nor a `SUM(size)` over the user's whole library
     /// to the upload path (the previous full recompute was O(N) per upload,
-    /// O(N²) for a bulk upload). Keyed by the file's `owner_id`; drift — e.g.
-    /// deletes, which don't decrement — is reconciled by the periodic sweep. A
-    /// DTO without a resolvable owner is simply left to that sweep.
-    fn maybe_update_storage_usage(&self, file: &FileDto) {
+    /// O(N²) for a bulk upload). Drift — e.g. deletes, which don't decrement —
+    /// is reconciled by the periodic sweep.
+    ///
+    /// Post-D7: `file.owner_id` is now nullable and unpopulated on new
+    /// rows, so the envelope owner comes from `caller_id` (the user who
+    /// just did the upload). The user-side delta is guarded by
+    /// `add_user_storage_usage_delta_if_personal` — it only fires when
+    /// the target drive is `kind='personal'`, so a shared-drive upload
+    /// still doesn't touch any user envelope.
+    fn maybe_update_storage_usage(&self, file: &FileDto, caller_id: Uuid) {
         let Some(storage_service) = &self.storage_usage_service else {
             return;
         };
         let delta = file.size as i64;
 
-        let owner = file
-            .owner_id
-            .as_deref()
-            .and_then(|s| Uuid::parse_str(s).ok());
+        let owner = Some(caller_id);
         let folder = file
             .folder_id
             .as_deref()
@@ -410,7 +413,7 @@ impl FileUploadUseCase for FileUploadService {
             "📡 STREAMING UPLOAD: {} ({} bytes, ID: {})",
             name, blob.size, dto.id
         );
-        self.maybe_update_storage_usage(&dto);
+        self.maybe_update_storage_usage(&dto, caller_id);
         if let Some(hook) = &self.file_lifecycle_hook {
             hook.on_file_created(&dto.id, &dto.content_hash, &dto.mime_type, blob.is_new_blob);
         }

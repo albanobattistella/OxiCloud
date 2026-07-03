@@ -358,18 +358,18 @@ impl FolderUseCase for FolderService {
                 .await?;
             return self.list_folders(parent_id).await;
         }
-        // No parent → list the user's root folders.
+        // No parent → list the caller's readable root folders. The
+        // predicate scopes by drive-membership grants (post-PR-B),
+        // closing the pre-D7 gap where the legacy `user_id` filter
+        // surfaced admin-created folders that admin had no role on.
         let folders = self
             .folder_storage
-            .list_folders_by_owner(parent_id, caller_id)
+            .list_root_folders_for_caller(caller_id)
             .await
             .map_err(|e| {
                 DomainError::internal_error(
                     "FolderStorage",
-                    format!(
-                        "Failed to list folders for owner '{}' in parent {:?}: {}",
-                        caller_id, parent_id, e
-                    ),
+                    format!("Failed to list root folders for caller '{caller_id}': {e}"),
                 )
             })?;
         Ok(folders.into_iter().map(FolderDto::from).collect())
@@ -431,24 +431,23 @@ impl FolderUseCase for FolderService {
             return self.list_folders_paginated(parent_id, &pagination).await;
         } else {
             let (folders, total_items) = self
-            .folder_storage
-            .list_folders_by_owner_paginated(
-                parent_id,
-                owner_id,
-                pagination.offset(),
-                pagination.limit(),
-                true,
-            )
-            .await
-            .map_err(|e| {
-                DomainError::internal_error(
-                    "FolderStorage",
-                    format!(
-                        "Failed to list folders for owner '{}' with pagination in parent {:?}: {}",
-                        owner_id, parent_id, e
-                    ),
+                .folder_storage
+                .list_root_folders_for_caller_paginated(
+                    owner_id,
+                    pagination.offset(),
+                    pagination.limit(),
+                    true,
                 )
-            })?;
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error(
+                        "FolderStorage",
+                        format!(
+                            "Failed to list root folders for caller '{}' with pagination: {}",
+                            owner_id, e
+                        ),
+                    )
+                })?;
 
             let total = total_items.unwrap_or(folders.len());
 
@@ -1082,17 +1081,18 @@ mod cascade_hook_integration_tests {
         let blob_hash = blake3::hash(format!("cascade-{label}-{}", Uuid::new_v4()).as_bytes())
             .to_hex()
             .to_string();
+        // Post-D7: `user_id` omitted — the column is nullable and
+        // provenance flows through `created_by` / `updated_by`.
         sqlx::query_scalar(
             "INSERT INTO storage.files
-                 (name, user_id, drive_id, folder_id, blob_hash, size, created_by, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+                 (name, drive_id, folder_id, blob_hash, size, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $6)
              RETURNING id",
         )
         .bind(format!(
             "rust-test-cascade-{label}-{}",
             &Uuid::new_v4().to_string()[..8]
         ))
-        .bind(user_id)
         .bind(drive_id)
         .bind(folder_id)
         .bind(&blob_hash)

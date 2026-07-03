@@ -1324,13 +1324,12 @@ mutation site updates `updated_by`.
 the filesystem rather than browsing a single folder: Photos, Music
 library, Favorites, Recent items, Search, Trash. With drives
 landing, each of these needs an explicit scope decision. The
-table below locks the choices; the rationale is **noise risk by
-file type**, not a uniform rule.
+table below locks the choices.
 
 | Section | Scope | Capability flag (per-drive policy) | Why |
 |---|---|---|---|
-| **Photos** (`/api/photos`) | Default Personal Drive only | `policies.include_in_photo_index = true` to opt a non-default drive in | Shared drives often carry images that aren't "photos" (screenshots, scans, charts-as-PNGs). Defaulting cross-drive pollutes the personal timeline. Opt-in for shared drives where the owner explicitly wants them indexed (e.g. "Family Photos" shared drive). |
-| **Music** — library view (future) + playlists | Cross-drive (all accessible drives) | `policies.forbid_music_index = true` to opt a drive out | Audio files in shared drives are almost always intentional content (band collaboration, family music, podcast archive). Defaulting cross-drive matches user intent. Owner opts a drive out for the rare case it shouldn't be indexed. The Music section today is *only* playlists; a `/api/music/tracks` library view added later inherits this scope. |
+| **Photos** (`/api/photos`) | Default Personal Drive only | `policies.include_in_photo_index = true` to opt a non-default drive in | Non-default drives often carry images that aren't "photos" (screenshots, scans, charts-as-PNGs). Defaulting cross-drive pollutes the personal timeline. Opt-in for non-default drives where the owner explicitly wants them indexed (e.g. "Family Photos" shared drive). |
+| **Music** — library view (future) + playlists | Default Personal Drive only | `policies.include_in_music_index = true` to opt a non-default drive in | Symmetric with Photos: audio files in a work drive or a random shared folder shouldn't silently bleed into the personal music library. Owner opts a non-default drive in (e.g. "Family Music", "Band Collaboration") when the drive genuinely is a music library. The Music section today is *only* playlists; a `/api/music/tracks` library view added later inherits this scope. |
 | **Music playlists** (`audio.playlists`) | User-scoped, cross-drive curation | n/a | Playlists are a curation tool. `owner_id` stays on `auth.users(id)`; tracks reference files via `playlist_items.file_id` and may live in any drive the user has access to. At list time, `list_playlist_tracks` filters out tracks in drives the caller can no longer reach (see §11's defense-in-depth pattern). |
 | **Favorites** (`/api/favorites/resources`) | Cross-drive (all accessible drives) | n/a | Personal organisation tool. Star a PDF from the work drive AND a photo from Personal — the whole point is cross-drive curation. ReBAC visibility check at list time drops rows the user can no longer reach. |
 | **Recent items** (`/api/recent/*`) | Cross-drive (all accessible drives) | n/a | Personal history. Same shape as Favorites — you touched files across drives; the timeline reflects that. ReBAC visibility check at list time. |
@@ -1340,33 +1339,151 @@ file type**, not a uniform rule.
 #### Capability flag mechanism
 
 Both `policies.include_in_photo_index` and
-`policies.forbid_music_index` live under the same JSONB
+`policies.include_in_music_index` live under the same JSONB
 `policies` column on `storage.drives` (see §8) — no new schema.
-The default values reflect the table above: omitted = "off" for
-photos (so non-default drives don't show photos unless the owner
-opts in), omitted = "off" for music (so all accessible drives
-*are* indexed unless the owner opts out).
+Both flags follow the same shape: **omitted = off**. The query
+predicate then reduces to a single positive rule for every
+drive:
 
-The owner-only UI in the drive settings panel toggles these
-flags. The query layer reads them at request time; flipping
-either flag is instant — no reindex required because the filter
-applies in the query Must-clause, the index itself is unchanged.
+```sql
+WHERE fi.drive_id IN (
+  SELECT d.id FROM storage.drives d
+    JOIN storage.role_grants rg
+      ON rg.resource_type='drive' AND rg.resource_id=d.id
+   WHERE rg.subject_id IN (caller's effective subjects)
+     AND (d.policies->>'include_in_photo_index')::boolean = true
+)
+```
 
-#### The Photos/Music asymmetry — defensible, not a smell
+No `default_for_user` OR-branch, no per-kind carve-out.
 
-Photos defaulting to "default-drive only" while Music defaults to
-"cross-drive" is the one case where two similar surfaces have
-different defaults. The justification is the noise-risk argument
-above: image content in shared drives is heterogeneous (often
-not "photos" in the gallery sense), audio content in shared
-drives is usually intentional. The capability flags let owners
-fix either case, but the defaults match what the typical user
-will want without configuration.
+**Default personal drive gets both flags set to `true` on
+creation.** The `PersonalDriveLifecycleHook` (§3) that creates
+the default personal drive on user provisioning populates
+`policies` with `{"include_in_photo_index": true,
+"include_in_music_index": true}`. Existing default personal
+drives get the same two flags via a one-shot backfill migration
+alongside the flag introduction. Net effect: every user's
+default personal drive is in scope from moment one, no user
+configuration required for the common case, but the SQL is
+kind-agnostic.
 
-If a uniform rule is ever preferred, the cheapest move is to
-flip Photos to cross-drive with `forbid_photo_index` as the
-opt-out (mirroring Music). That can land later without a schema
-change — just a behaviour change.
+**Non-default drives** (secondary personals, shared drives) are
+created with the flags omitted, so they stay out of scope until
+the owner explicitly opts in via the admin "Manage policies"
+modal.
+
+Flipping either flag on any drive is instant — the query reads
+`policies` at request time; the index itself is unchanged.
+Toggle-off on a default personal drive is *possible* (admins
+own the drive-policy mutation surface — see §8) but shows a
+confirm dialog in the UI ("this will empty the user's Photos
+timeline" / "…their Music library"), since it's an unusual
+action.
+
+#### Why symmetric (both opt-in) instead of asymmetric
+
+An earlier version of this section had Music default to
+cross-drive (`forbid_music_index` as an opt-out), on the
+argument that audio in shared drives is "almost always
+intentional content." That asymmetry created two problems:
+
+1. **Mixed-form flag naming** — one `include_in_*` and one
+   `forbid_*` with opposite meanings, hard to reason about in the
+   admin UI and the query layer.
+2. **The "shared audio is always intentional" claim doesn't
+   hold under scrutiny** — a work drive with a few voicemail
+   MP3s or a project drive with a stray podcast recording
+   shouldn't bleed into the personal music library any more than
+   a work drive with screenshots should bleed into Photos.
+
+Symmetric opt-in (`include_in_*_index` for both) fixes both.
+The "Family Music" case still works — the owner flips the flag
+once on drive creation, same one-time gesture as "Family Photos"
+under the pre-existing photo policy. The default-personal case
+(90%+ of users) needs no configuration for either surface.
+
+#### Face indexing — per-drive clustering, scope follows Photos
+
+Face indexing is bound to the same scope as `/api/photos` — the
+two surfaces show the same content set, so the face data behind
+that content lives in the same scope.
+
+Two layers to keep distinct:
+
+**Storage layer — per blob.** Face fingerprints are keyed on
+`blob_hash` (BLAKE3), FK to `storage.blobs.hash`. Fingerprints
+are deterministic from content bytes, and OxiCloud dedups
+content via blob hash — so a photo uploaded into N drives (or N
+times by N users) produces *one* fingerprint set, computed once,
+reused forever. Cascade-deletes when the blob is GC'd (ref_count
+→ 0). No `user_id`, `created_by`, `file_id`, `drive_id`, or
+group key on the fingerprint row: identity is the content.
+
+**Clustering layer — per drive.** Cluster computation runs
+*within* a drive: take every fingerprint reachable via a file in
+that drive (`storage.files.drive_id = X` JOIN
+`face_fingerprints` ON `blob_hash`), cluster them, emit clusters
+scoped to drive X. The query repeats per drive the caller can
+see (default personal + drives where
+`policies.include_in_photo_index = true` AND the caller has
+Read). Same-person fingerprints from different drives land in
+**separate** clusters by default — even when both drives reach
+the exact same blob, because clustering is keyed on drive, not
+on fingerprint identity.
+
+**Why per-drive clustering:**
+
+The drive is already the data boundary post-D6 — quota, sharing,
+trash, AuthZ all pivot on `drive_id`. The face library is part
+of the drive's content, not a cross-drive aggregate. Two
+properties fall out cleanly:
+
+- **Family-drive UX works.** Alice and Bob both members of
+  "Family" with `include_in_photo_index=true`. Alice uploads
+  Christmas photos; Bob uploads birthday photos. Grandma is in
+  both. Both see the *same* Grandma cluster in Family — one
+  merged cluster derived from fingerprints across both uploads.
+  Labels on the Family cluster are drive-scoped (anyone with
+  Photos access to Family sees them).
+- **Personal-drive isolation is preserved.** Each user's
+  personal drive is access-isolated by definition (nobody else
+  has Read on it). So a personal-drive cluster is visible only
+  to the drive's owner. The privacy guarantee falls out of
+  drive-access scoping — no separate user-id key needed.
+
+**Cross-drive clusters don't auto-merge.** Bob labelling
+"Grandma" in his Personal-drive cluster does NOT propagate to
+Family's Grandma cluster. Two separate visual clusters by
+default — even if the embedding similarity would otherwise
+match them. Rationale: auto-propagating private labels into a
+shared drive would silently expose personal classifications.
+Future UX can offer explicit per-cluster merging ("these two
+clusters are the same person") — user-driven, never silent.
+
+**Shared-drive opt-in is the consent surface.** Enabling
+`include_in_photo_index` on a drive is the owner saying "the
+photos in this drive are part of the drive's photo library,
+including the face data they contain." Doesn't add a new
+sharing surface — surfaces what was already visible (anyone
+with Read on a photo can see who's in it).
+
+**Implementation:**
+
+- `face_fingerprints(blob_hash, embedding, …)` — FK to
+  `storage.blobs.hash`, no `user_id` / `file_id` / `drive_id`
+  column. Cascade-delete via the blob ref-count → 0 GC path.
+- Cluster query: `SELECT … FROM storage.files f JOIN
+  face_fingerprints fp ON fp.blob_hash = f.blob_hash WHERE
+  f.drive_id = $1 AND NOT f.is_trashed` for each drive in the
+  caller's Photos-scope set.
+- Pre-D7 the legacy `(user_id, blob_hash)` query in
+  `face_indexing_service.rs::lookup_user` stays in place; D7
+  drops `user_id` from the column set in lockstep with the
+  global user_id retirement, leaving the fingerprint row keyed
+  on `blob_hash` alone. Both the `include_in_photo_index` policy
+  AND D7's user_id drop must land before face indexing can move
+  to the per-drive clustering model.
 
 #### Verification sketch
 

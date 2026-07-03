@@ -912,7 +912,12 @@ impl AppServiceFactory {
     }
 
     /// Creates the Places (photo map) service. Reuses the existing file-read
-    /// repository — the data is the caller's own geotagged photos.
+    /// repository — the data is the caller's Photos-scope geotagged photos
+    /// (§15: default personal drive + drives with
+    /// `include_in_photo_index = true` AND caller has Read).
+    /// Group-membership expansion is inline in the SQL via
+    /// `storage.caller_group_ids`, so the service needs no AuthZ engine
+    /// handle.
     pub fn create_places_service(
         &self,
         file_read: &Arc<FileBlobReadRepository>,
